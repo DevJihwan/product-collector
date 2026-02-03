@@ -1,0 +1,19 @@
+# 무신사/네이버 스마트스토어 상품 데이터 수집 프로그램
+# 필수 의존성
+
+# GUI
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# Browser automation
+playwright>=1.40.0
+
+# HTTP 클라이언트
+aiohttp>=3.9.0
+
+# 엑셀 처리
+openpyxl>=3.1.0
+
+# 설치 명령:
+# pip install -r requirements.txt
+# playwright install chromium
