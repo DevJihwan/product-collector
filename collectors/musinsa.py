@@ -75,11 +75,12 @@ class MusinsaCollector(BaseCollector):
 
         # 기본 파라미터 설정
         gf = query.get('gf', ['A'])[0]
-        sort_code = query.get('sortCode', ['NEW'])[0]
+        sort_code = query.get('sortCode', [None])[0]  # URL에 없으면 None → API 기본값(추천순) 사용
         page_size = 60  # 무신사 기본 페이지 크기
 
+        sort_display = sort_code if sort_code else '추천순(기본)'
         self.log(f"카테고리 URL: {url}")
-        self.log(f"  카테고리: {category_code}, 정렬: {sort_code}, 성별: {gf}")
+        self.log(f"  카테고리: {category_code}, 정렬: {sort_display}, 성별: {gf}")
 
         # 최초 1회 페이지 방문 (쿠키/세션 획득)
         try:
@@ -165,7 +166,7 @@ class MusinsaCollector(BaseCollector):
 
         return products
 
-    def _build_api_url(self, category: str, page: int, size: int, seen: int, gf: str, sort_code: str) -> str:
+    def _build_api_url(self, category: str, page: int, size: int, seen: int, gf: str, sort_code: str = None) -> str:
         """무신사 상품 목록 API URL 생성"""
         params = {
             'category': category,
@@ -173,11 +174,13 @@ class MusinsaCollector(BaseCollector):
             'size': size,
             'seen': seen,
             'gf': gf,
-            'sortCode': sort_code,
             'caller': 'CATEGORY',
             'seenAds': '',
             'testGroup': ''
         }
+        # sortCode가 지정된 경우에만 포함 (미지정 시 API 기본값 = 추천순)
+        if sort_code:
+            params['sortCode'] = sort_code
         query_str = '&'.join(f"{k}={v}" for k, v in params.items())
         return f"https://api.musinsa.com/api2/dp/v1/plp/goods?{query_str}"
 
