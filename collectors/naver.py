@@ -110,6 +110,7 @@ class NaverSmartStoreCollector(BaseCollector):
     async def collect_category(self, url: str, start_page: int = 1, end_page: int = None) -> List[ProductInfo]:
         """카테고리 페이지에서 상품 목록 수집 (페이지 1: SSR 데이터, 페이지 2+: 버튼 클릭 + DOM 추출)"""
         products = []
+        seen_ids = set()  # 중복 방지용 product_id 집합
         current_page = start_page
         has_next = True
 
@@ -181,8 +182,20 @@ class NaverSmartStoreCollector(BaseCollector):
                     self.log(f"  ⚠️ 페이지 {current_page}: 상품 없음")
                     break
 
-                self.log(f"  ✓ 페이지 {current_page}: {len(page_products)}개 상품 발견")
-                products.extend(page_products)
+                # 중복 제거: 이미 수집된 product_id는 스킵
+                new_products = []
+                for p in page_products:
+                    if p.product_id not in seen_ids:
+                        seen_ids.add(p.product_id)
+                        new_products.append(p)
+
+                if not new_products and page_products:
+                    # 모든 상품이 중복이면 페이지 전환이 안 된 것 → 중단
+                    self.log(f"  ⚠️ 페이지 {current_page}: 모든 상품이 중복 (페이지 전환 실패) → 수집 중단")
+                    break
+
+                self.log(f"  ✓ 페이지 {current_page}: {len(new_products)}개 상품 (중복 제외)")
+                products.extend(new_products)
 
                 # 페이지네이션 확인
                 if end_page and current_page >= end_page:
@@ -190,7 +203,7 @@ class NaverSmartStoreCollector(BaseCollector):
                 elif current_page >= total_pages:
                     has_next = False
                 else:
-                    # 다음 페이지로 이동 (버튼 클릭)
+                    # 다음 페이지로 이동 (하단 버튼 클릭)
                     next_page = current_page + 1
                     navigated = await self._navigate_to_page(next_page)
                     if not navigated:
@@ -301,12 +314,62 @@ class NaverSmartStoreCollector(BaseCollector):
             return []
 
     async def _navigate_to_page(self, target_page: int) -> bool:
-        """URL 기반으로 특정 페이지로 이동"""
+        """페이지 번호 버튼을 클릭하여 특정 페이지로 이동"""
         try:
-            page_url = self._build_page_url(self.state.url, target_page)
-            await self.page.goto(page_url, wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
-            return True
+            # 페이지 번호 버튼 클릭: 숫자만 있는 a/button 태그 중 동일 클래스가 여러 개인 그룹 찾기
+            clicked = await self.page.evaluate("""
+                (targetPage) => {
+                    // 숫자만 포함된 a 태그를 모두 수집
+                    const allLinks = document.querySelectorAll('a');
+                    const numberLinks = [];
+                    for (const el of allLinks) {
+                        const text = el.textContent.trim();
+                        if (/^\d+$/.test(text) && parseInt(text) <= 100 && el.offsetParent !== null) {
+                            numberLinks.push({ el, num: parseInt(text), className: el.className });
+                        }
+                    }
+
+                    // 같은 클래스를 공유하는 숫자 링크 그룹 찾기 (페이지네이션 패턴)
+                    const classGroups = {};
+                    for (const link of numberLinks) {
+                        const cls = link.className;
+                        if (!classGroups[cls]) classGroups[cls] = [];
+                        classGroups[cls].push(link);
+                    }
+
+                    // 가장 큰 그룹이 페이지네이션 (2개 이상 연속 숫자)
+                    let paginationGroup = null;
+                    let maxSize = 0;
+                    for (const [cls, links] of Object.entries(classGroups)) {
+                        if (links.length > maxSize) {
+                            maxSize = links.length;
+                            paginationGroup = links;
+                        }
+                    }
+
+                    if (paginationGroup) {
+                        for (const link of paginationGroup) {
+                            if (link.num === targetPage) {
+                                link.el.click();
+                                return true;
+                            }
+                        }
+                    }
+
+                    return false;
+                }
+            """, target_page)
+
+            if clicked:
+                # 페이지 전환 대기
+                await asyncio.sleep(2)
+                await self.page.evaluate('window.scrollTo(0, 0)')
+                await asyncio.sleep(0.5)
+                return True
+
+            self.log(f"    ⚠️ 페이지 {target_page} 버튼을 찾지 못함")
+            return False
+
         except Exception as e:
             self.logger.error(f"페이지 {target_page} 이동 실패: {e}")
             return False
