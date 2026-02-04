@@ -24,9 +24,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Install playwright
-echo Installing Playwright...
-python -m pip install playwright
+REM Install playwright (EXE 빌드와 동일한 버전)
+echo Installing Playwright 1.50.0...
+python -m pip install playwright==1.50.0
 if errorlevel 1 (
     echo [ERROR] Failed to install Playwright.
     pause

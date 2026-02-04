@@ -42,9 +42,34 @@ jobs:
             exit 1
           }
 
-      - name: Upload EXE artifact
+      - name: Prepare release package
+        run: |
+          # install_browser.bat 복사
+          Copy-Item "install_browser.bat" "dist\install_browser.bat"
+          # README 생성
+          @"
+          ==========================================
+            ProductCollector 설치 안내
+          ==========================================
+
+          1. Python 3.11 설치 (https://www.python.org/downloads/)
+             - 설치 시 "Add Python to PATH" 반드시 체크!
+
+          2. install_browser.bat 실행
+             - Playwright 브라우저를 설치합니다
+
+          3. ProductCollector.exe 실행
+             - 프로그램이 시작됩니다
+
+          ※ install_browser.bat 은 최초 1회만 실행하면 됩니다.
+          "@ | Out-File -FilePath "dist\README.txt" -Encoding utf8
+
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
           name: ProductCollector-Windows
-          path: dist/ProductCollector.exe
+          path: |
+            dist/ProductCollector.exe
+            dist/install_browser.bat
+            dist/README.txt
           retention-days: 30
