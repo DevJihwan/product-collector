@@ -113,7 +113,8 @@ class NaverSmartStoreCollector(BaseCollector):
         current_page = start_page
         has_next = True
 
-        # URL 파싱
+        # URL 파싱 및 원본 URL 저장
+        self.state.url = url
         url_info = self.parse_url(url)
         self.log(f"스토어: {url_info['store_name']} ({url_info['store_type']})")
         self.log(f"카테고리 ID: {url_info['category_id']}")
@@ -300,51 +301,12 @@ class NaverSmartStoreCollector(BaseCollector):
             return []
 
     async def _navigate_to_page(self, target_page: int) -> bool:
-        """페이지네이션 버튼을 클릭하여 특정 페이지로 이동"""
+        """URL 기반으로 특정 페이지로 이동"""
         try:
-            # 먼저 페이지 하단으로 스크롤 (페이지네이션 버튼 노출)
-            await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await asyncio.sleep(1)
-
-            # 페이지 번호 버튼 찾기 (a.hyY6CXtbcn 클래스)
-            buttons = await self.page.query_selector_all('a[class*="paginate"]')
-            if not buttons:
-                # 클래스명이 변경될 수 있으므로 페이지네이션 영역에서 찾기
-                buttons = await self.page.query_selector_all('[class*="pagination"] a, [class*="paginate"] a, nav a')
-
-            # 페이지 번호 버튼에서 target_page 찾아서 클릭
-            for btn in buttons:
-                text = await btn.text_content()
-                if text and text.strip() == str(target_page):
-                    await btn.click()
-                    await asyncio.sleep(2)
-                    # 페이지 이동 확인 (URL의 cp 파라미터 체크)
-                    current_url = self.page.url
-                    if f'cp={target_page}' in current_url:
-                        return True
-                    # URL이 바뀌지 않아도 DOM이 변경되었으면 성공
-                    await asyncio.sleep(1)
-                    return True
-
-            # 숫자 버튼을 못 찾으면 "다음" 버튼 사용하여 순차 이동
-            next_buttons = await self.page.query_selector_all('a[class*="next"], button[class*="next"]')
-            if not next_buttons:
-                # 텍스트로 "다음" 버튼 찾기
-                all_buttons = await self.page.query_selector_all('a, button')
-                for btn in all_buttons:
-                    text = await btn.text_content()
-                    if text and '다음' in text.strip():
-                        next_buttons = [btn]
-                        break
-
-            if next_buttons:
-                await next_buttons[0].click()
-                await asyncio.sleep(2)
-                return True
-
-            self.log(f"  ⚠️ 페이지 {target_page} 버튼을 찾을 수 없습니다.")
-            return False
-
+            page_url = self._build_page_url(self.state.url, target_page)
+            await self.page.goto(page_url, wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+            return True
         except Exception as e:
             self.logger.error(f"페이지 {target_page} 이동 실패: {e}")
             return False

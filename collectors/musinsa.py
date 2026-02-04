@@ -195,10 +195,9 @@ class MusinsaCollector(BaseCollector):
         goods_no = product.product_id
         detail_url = product.url
 
-        # 상세 페이지 방문 (쿠키 획득)
+        # 상세 페이지 방문 (DOM 추출 + 쿠키 획득)
         try:
             await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
-            await asyncio.sleep(1)
         except:
             pass
 
@@ -227,88 +226,94 @@ class MusinsaCollector(BaseCollector):
         except Exception as e:
             self.logger.debug(f"카테고리 수집 실패 [{goods_no}]: {e}")
 
-        # 1. 기본 정보 API 호출
-        try:
-            info_url = f"https://goods-detail.musinsa.com/api2/goods/{goods_no}"
-            response = await self.page.request.get(info_url, headers={
-                'Accept': 'application/json',
-                'Origin': 'https://www.musinsa.com',
-                'Referer': detail_url
-            })
+        # 1~3. API 3개 병렬 호출 (기본정보 + 통계 + 리뷰)
+        api_headers = {
+            'Accept': 'application/json',
+            'Origin': 'https://www.musinsa.com',
+            'Referer': detail_url
+        }
 
-            if response.status == 200:
-                data = await response.json()
-                d = data.get('data', {})
+        async def fetch_info():
+            try:
+                resp = await self.page.request.get(
+                    f"https://goods-detail.musinsa.com/api2/goods/{goods_no}",
+                    headers=api_headers
+                )
+                if resp.status == 200:
+                    return await resp.json()
+            except Exception as e:
+                self.logger.debug(f"기본 정보 API 실패 [{goods_no}]: {e}")
+            return None
 
-                # 품번
-                product.extra_info['style_no'] = d.get('styleNo', '')
+        async def fetch_stat():
+            try:
+                resp = await self.page.request.get(
+                    f"https://goods-detail.musinsa.com/api2/goods/{goods_no}/stat",
+                    headers=api_headers
+                )
+                if resp.status == 200:
+                    return await resp.json()
+            except Exception as e:
+                self.logger.debug(f"통계 API 실패 [{goods_no}]: {e}")
+            return None
 
-                # 성별
-                sex = d.get('sex', [])
-                product.extra_info['gender'] = ', '.join(sex) if isinstance(sex, list) else str(sex)
+        async def fetch_review():
+            try:
+                resp = await self.page.request.get(
+                    f"https://goods.musinsa.com/api2/review/v1/goods/{goods_no}/reviews/summary",
+                    headers=api_headers
+                )
+                if resp.status == 200:
+                    return await resp.json()
+            except Exception as e:
+                self.logger.debug(f"리뷰 API 실패 [{goods_no}]: {e}")
+            return None
 
-                # 시즌
-                season_year = d.get('seasonYear', '')
-                season_code = d.get('season', '')
-                season_name = 'SS' if season_code == '1' else 'FW' if season_code == '2' else season_code
-                product.extra_info['season'] = f"{season_year} {season_name}".strip()
+        info_data, stat_data, review_data = await asyncio.gather(
+            fetch_info(), fetch_stat(), fetch_review()
+        )
 
-                # 이미지 URL 업데이트
-                if d.get('thumbnailImageUrl'):
-                    img = d.get('thumbnailImageUrl')
-                    if img.startswith('/'):
-                        img = 'https://image.musinsa.com' + img
-                    product.image_url = img
+        # 기본 정보 처리
+        if info_data:
+            d = info_data.get('data', {})
+            product.extra_info['style_no'] = d.get('styleNo', '')
 
-                # 추가 이미지 수집
-                goods_images = d.get('goodsImages', [])
-                if goods_images:
-                    extra_images = []
-                    for img_data in goods_images:
-                        img_url = img_data.get('imageUrl', '')
-                        if img_url:
-                            if img_url.startswith('/'):
-                                img_url = 'https://image.musinsa.com' + img_url
-                            extra_images.append(img_url)
-                    product.extra_info['extra_images'] = extra_images
-        except Exception as e:
-            self.logger.debug(f"기본 정보 API 실패 [{goods_no}]: {e}")
+            sex = d.get('sex', [])
+            product.extra_info['gender'] = ', '.join(sex) if isinstance(sex, list) else str(sex)
 
-        # 2. 통계 API 호출
-        try:
-            stat_url = f"https://goods-detail.musinsa.com/api2/goods/{goods_no}/stat"
-            response = await self.page.request.get(stat_url, headers={
-                'Accept': 'application/json',
-                'Origin': 'https://www.musinsa.com',
-                'Referer': detail_url
-            })
+            season_year = d.get('seasonYear', '')
+            season_code = d.get('season', '')
+            season_name = 'SS' if season_code == '1' else 'FW' if season_code == '2' else season_code
+            product.extra_info['season'] = f"{season_year} {season_name}".strip()
 
-            if response.status == 200:
-                data = await response.json()
-                d = data.get('data', {})
-                product.extra_info['view_count'] = d.get('pageViewTotal', 0)
-                product.extra_info['sales_count'] = d.get('purchaseTotal', 0)
-        except Exception as e:
-            self.logger.debug(f"통계 API 실패 [{goods_no}]: {e}")
+            if d.get('thumbnailImageUrl'):
+                img = d.get('thumbnailImageUrl')
+                if img.startswith('/'):
+                    img = 'https://image.musinsa.com' + img
+                product.image_url = img
 
-        # 3. 리뷰 요약 API 호출
-        try:
-            review_url = f"https://goods.musinsa.com/api2/review/v1/goods/{goods_no}/reviews/summary"
-            response = await self.page.request.get(review_url, headers={
-                'Accept': 'application/json',
-                'Origin': 'https://www.musinsa.com',
-                'Referer': detail_url
-            })
+            goods_images = d.get('goodsImages', [])
+            if goods_images:
+                extra_images = []
+                for img_data in goods_images:
+                    img_url = img_data.get('imageUrl', '')
+                    if img_url:
+                        if img_url.startswith('/'):
+                            img_url = 'https://image.musinsa.com' + img_url
+                        extra_images.append(img_url)
+                product.extra_info['extra_images'] = extra_images
 
-            if response.status == 200:
-                data = await response.json()
-                d = data.get('data', {})
-                # 리뷰 총 개수
-                product.extra_info['review_count'] = d.get('totalCount', 0)
-                # 평점
-                product.extra_info['rating'] = d.get('satisfactionScore', 0)
-        except Exception as e:
-            self.logger.debug(f"리뷰 API 실패 [{goods_no}]: {e}")
+        # 통계 처리
+        if stat_data:
+            d = stat_data.get('data', {})
+            product.extra_info['view_count'] = d.get('pageViewTotal', 0)
+            product.extra_info['sales_count'] = d.get('purchaseTotal', 0)
+
+        # 리뷰 처리
+        if review_data:
+            d = review_data.get('data', {})
+            product.extra_info['review_count'] = d.get('totalCount', 0)
+            product.extra_info['rating'] = d.get('satisfactionScore', 0)
 
         # 4. 상세 설명 이미지 수집 (DOM에서 추출)
         try:
@@ -413,9 +418,6 @@ class MusinsaCollector(BaseCollector):
             # 1. 옵션 드롭다운 클릭하여 품절 정보 추출
             sold_out_set = set()
             try:
-                # 페이지 로드 대기
-                await asyncio.sleep(1)
-
                 # 드롭다운 트리거 찾기 및 클릭
                 dropdown_selectors = [
                     '[data-mds="DropdownTriggerInput"]',
@@ -426,12 +428,11 @@ class MusinsaCollector(BaseCollector):
                 dropdown_found = False
                 for selector in dropdown_selectors:
                     try:
-                        dropdown = await self.page.wait_for_selector(selector, timeout=3000)
+                        dropdown = await self.page.wait_for_selector(selector, timeout=1500)
                         if dropdown:
                             await dropdown.scroll_into_view_if_needed()
-                            await asyncio.sleep(0.3)
                             await dropdown.click()
-                            await asyncio.sleep(1)  # 드롭다운 열리는 시간 대기
+                            await asyncio.sleep(0.5)
                             dropdown_found = True
                             break
                     except:
