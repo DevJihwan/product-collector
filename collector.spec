@@ -80,7 +80,16 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=[
+        # MSVC++ 런타임 DLL은 UPX 압축 시 손상되므로 제외
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+        'msvcp140.dll',
+        'msvcp140_1.dll',
+        'msvcp140_2.dll',
+        'ucrtbase.dll',
+        'api-ms-win-*.dll',
+    ],
     runtime_tmpdir=None,
     console=False,  # GUI app - no console window
     disable_windowed_traceback=False,
