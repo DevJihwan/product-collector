@@ -25,6 +25,7 @@ class NaverSmartStoreCollector(BaseCollector):
         self.naver_config = NaverConfig()
         self.store_name = ""
         self.store_type = "brand"  # brand or smartstore
+        self.channel_id = None  # 카테고리 로드 시 캡처
 
     def parse_url(self, url: str) -> Dict[str, Any]:
         """
@@ -124,6 +125,19 @@ class NaverSmartStoreCollector(BaseCollector):
         if not self.page:
             await self.setup_browser()
 
+        # channel_id 캡처용 리스너
+        async def capture_channel_id(response):
+            try:
+                url_str = response.url
+                m = re.search(r'/n/v2/channels/([^/]+)/', url_str)
+                if m and not self.channel_id:
+                    self.channel_id = m.group(1)
+                    self.logger.debug(f"channel_id 캡처: {self.channel_id}")
+            except Exception:
+                pass
+
+        self.page.on('response', capture_channel_id)
+
         # 최초 페이지 로드 (항상 페이지 1 URL로 시작)
         page_url = self._build_page_url(url, 1)
         try:
@@ -131,7 +145,10 @@ class NaverSmartStoreCollector(BaseCollector):
             await asyncio.sleep(2)
         except Exception as e:
             self.logger.error(f"초기 페이지 로드 실패: {e}")
+            self.page.remove_listener('response', capture_channel_id)
             return products
+
+        self.page.remove_listener('response', capture_channel_id)
 
         # __PRELOADED_STATE__에서 총 상품수/페이지사이즈 정보 추출 (1회)
         total_count = 0
@@ -149,8 +166,37 @@ class NaverSmartStoreCollector(BaseCollector):
                             total_count = sub_data.get('totalCount', 0)
                             page_size = sub_data.get('pageSize', 40)
                             break
+
+                # __PRELOADED_STATE__에서 channel_id 폴백 추출
+                if not self.channel_id:
+                    # 방법1: channel 키 직접 탐색
+                    channel_info = state_data.get('channel', {})
+                    if isinstance(channel_info, dict):
+                        cid = channel_info.get('channelNo') or channel_info.get('id')
+                        if not cid:
+                            # {'A': {channelNo: ...}} 형태 대응
+                            for v in channel_info.values():
+                                if isinstance(v, dict):
+                                    cid = v.get('channelNo') or v.get('id')
+                                    if cid:
+                                        break
+                        if cid:
+                            self.channel_id = str(cid)
+                            self.logger.debug(f"channel_id (PRELOADED_STATE): {self.channel_id}")
+                    # 방법2: 중첩 탐색
+                    if not self.channel_id:
+                        for key, val in state_data.items():
+                            if isinstance(val, dict):
+                                cid = val.get('channelNo') or val.get('channelId')
+                                if cid:
+                                    self.channel_id = str(cid)
+                                    self.logger.debug(f"channel_id (nested): {self.channel_id}")
+                                    break
         except Exception as e:
             self.logger.debug(f"__PRELOADED_STATE__ 파싱 실패: {e}")
+
+        if self.channel_id:
+            self.log(f"  channel_id: {self.channel_id}")
 
         total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
         self.state.total_pages = total_pages
@@ -174,6 +220,10 @@ class NaverSmartStoreCollector(BaseCollector):
                 if current_page == 1 and start_page == 1:
                     # 페이지 1: __PRELOADED_STATE__에서 풍부한 데이터 추출
                     page_products = await self._extract_from_preloaded_state()
+                    if not page_products:
+                        # PRELOADED_STATE에 상품이 없으면 DOM 폴백 (all 카테고리 등)
+                        self.logger.debug("PRELOADED_STATE 비어있음 → DOM 추출 폴백")
+                        page_products = await self._extract_from_dom()
                 else:
                     # 페이지 2+: DOM에서 상품 추출
                     page_products = await self._extract_from_dom()
@@ -196,6 +246,25 @@ class NaverSmartStoreCollector(BaseCollector):
 
                 self.log(f"  ✓ 페이지 {current_page}: {len(new_products)}개 상품 (중복 제외)")
                 products.extend(new_products)
+
+                # totalCount가 0이었지만 DOM에서 상품을 찾은 경우, total_pages 재계산
+                if total_count == 0 and len(new_products) >= page_size:
+                    # DOM에서 페이지 수 추출 시도
+                    dom_total_pages = await self.page.evaluate("""
+                        () => {
+                            const btns = document.querySelectorAll('a[class*="pagination"], button[class*="pagination"]');
+                            let maxPage = 1;
+                            for (const btn of btns) {
+                                const num = parseInt(btn.textContent.trim());
+                                if (!isNaN(num) && num > maxPage) maxPage = num;
+                            }
+                            return maxPage;
+                        }
+                    """)
+                    if dom_total_pages > total_pages:
+                        total_pages = dom_total_pages
+                        self.state.total_pages = total_pages
+                        self.log(f"  페이지 수 업데이트: {total_pages}페이지")
 
                 # 페이지네이션 확인
                 if end_page and current_page >= end_page:
@@ -303,7 +372,7 @@ class NaverSmartStoreCollector(BaseCollector):
                     image_url=item.get('imgUrl', ''),
                     url=product_url,
                     extra_info={
-                        'option_usable': False,  # 상세 페이지에서 확인
+                        'option_usable': False,  # collect_product_detail에서 API 응답으로 갱신됨
                     }
                 )
                 products.append(product)
@@ -391,59 +460,172 @@ class NaverSmartStoreCollector(BaseCollector):
         query_str = '&'.join(f"{k}={v[0]}" for k, v in query.items())
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{query_str}"
 
+    async def _fetch_product_api(self, product_id: str) -> Optional[Dict]:
+        """channel_id를 이용해 page.evaluate(fetch)로 상품 API 직접 호출 (페이지 네비게이션 불필요)"""
+        if not self.channel_id:
+            return None
+
+        base_domain = "brand.naver.com" if self.store_type == "brand" else "smartstore.naver.com"
+        api_url = f"https://{base_domain}/n/v2/channels/{self.channel_id}/products/{product_id}?withWindow=false"
+
+        try:
+            data = await self.page.evaluate("""
+                async (url) => {
+                    try {
+                        const resp = await fetch(url, { credentials: 'include' });
+                        if (!resp.ok) return { __error: resp.status };
+                        return await resp.json();
+                    } catch (e) {
+                        return { __error: e.message };
+                    }
+                }
+            """, api_url)
+
+            if data and '__error' not in data:
+                return data
+            else:
+                err = data.get('__error', 'unknown') if data else 'null'
+                self.logger.debug(f"fetch API 실패 [{product_id}]: {err}")
+                return None
+        except Exception as e:
+            self.logger.debug(f"page.evaluate fetch 실패 [{product_id}]: {e}")
+            return None
+
+    async def _fetch_content_api(self, product_id: str, product_no: str = None) -> Optional[Dict]:
+        """channel_id를 이용해 상품 상세설명(renderContent) API 호출"""
+        if not self.channel_id or not product_no:
+            return None
+
+        base_domain = "brand.naver.com" if self.store_type == "brand" else "smartstore.naver.com"
+        content_url = f"https://{base_domain}/n/v2/channels/{self.channel_id}/products/{product_id}/contents/{product_no}/PC"
+
+        try:
+            data = await self.page.evaluate("""
+                async (url) => {
+                    try {
+                        const resp = await fetch(url, { credentials: 'include' });
+                        if (!resp.ok) return { __error: resp.status };
+                        return await resp.json();
+                    } catch (e) {
+                        return { __error: e.message };
+                    }
+                }
+            """, content_url)
+
+            if data and '__error' not in data and 'renderContent' in data:
+                return data
+            else:
+                self.logger.debug(f"content API 응답 없음 [{product_id}]")
+                return None
+        except Exception as e:
+            self.logger.debug(f"content API fetch 실패 [{product_id}]: {e}")
+            return None
+
+    async def _fetch_products_batch(self, product_ids: List[str]) -> Dict[str, Optional[Dict]]:
+        """여러 상품을 배치로 fetch (Promise.all)"""
+        if not self.channel_id or not product_ids:
+            return {}
+
+        base_domain = "brand.naver.com" if self.store_type == "brand" else "smartstore.naver.com"
+        urls = {
+            pid: f"https://{base_domain}/n/v2/channels/{self.channel_id}/products/{pid}?withWindow=false"
+            for pid in product_ids
+        }
+
+        try:
+            results = await self.page.evaluate("""
+                async (urlMap) => {
+                    const entries = Object.entries(urlMap);
+                    const results = {};
+                    const batchSize = 5;
+                    for (let i = 0; i < entries.length; i += batchSize) {
+                        const batch = entries.slice(i, i + batchSize);
+                        const promises = batch.map(async ([pid, url]) => {
+                            try {
+                                const resp = await fetch(url, { credentials: 'include' });
+                                if (!resp.ok) return [pid, null];
+                                const data = await resp.json();
+                                return [pid, data];
+                            } catch (e) {
+                                return [pid, null];
+                            }
+                        });
+                        const batchResults = await Promise.all(promises);
+                        for (const [pid, data] of batchResults) {
+                            results[pid] = data;
+                        }
+                        // 배치 간 짧은 딜레이
+                        if (i + batchSize < entries.length) {
+                            await new Promise(r => setTimeout(r, 200));
+                        }
+                    }
+                    return results;
+                }
+            """, urls)
+            return results or {}
+        except Exception as e:
+            self.logger.debug(f"배치 fetch 실패: {e}")
+            return {}
+
     async def collect_product_detail(self, product: ProductInfo) -> ProductInfo:
-        """상품 상세 정보 수집 (브라우저 필요)"""
+        """상품 상세 정보 수집 (channel_id가 있으면 fetch API, 없으면 page.goto 폴백)"""
         product_id = product.product_id
         detail_url = product.url
 
-        # API 응답 캡처 변수
         product_data = None
         content_data = None
 
-        async def capture_product_response(response):
-            nonlocal product_data, content_data
-            try:
-                url = response.url
-                # /products/{id} 패턴 매칭 (withWindow 파라미터 포함)
-                if f'/products/{product_id}' in url and ('withWindow' in url or url.endswith(f'/products/{product_id}')):
-                    if response.status == 200:
+        # 방법 1: channel_id가 있으면 page.evaluate(fetch)로 직접 API 호출
+        if self.channel_id:
+            product_data = await self._fetch_product_api(product_id)
+            if product_data:
+                self.logger.debug(f"fetch API 성공 [{product_id}]")
+                # 상세설명(renderContent)도 fetch (productNo 필요)
+                product_no = product_data.get('productNo', '')
+                if product_no:
+                    content_data = await self._fetch_content_api(product_id, str(product_no))
+
+        # 방법 2: 폴백 - 기존 page.goto 방식
+        if not product_data:
+            self.logger.debug(f"page.goto 폴백 [{product_id}]")
+
+            async def capture_product_response(response):
+                nonlocal product_data, content_data
+                try:
+                    url = response.url
+                    if f'/products/{product_id}' in url and ('withWindow' in url or url.endswith(f'/products/{product_id}')):
+                        if response.status == 200:
+                            try:
+                                data = await response.json()
+                                if 'optionCombinations' in data or 'name' in data:
+                                    product_data = data
+                                    self.logger.debug(f"API 응답 캡처: {url[:80]}...")
+                            except:
+                                pass
+                    elif '/contents/' in url and response.status == 200:
                         try:
                             data = await response.json()
-                            # optionCombinations가 있는 응답만 사용
-                            if 'optionCombinations' in data or 'name' in data:
-                                product_data = data
-                                self.logger.debug(f"API 응답 캡처: {url[:80]}...")
+                            if 'renderContent' in data:
+                                content_data = data
+                                self.logger.debug(f"컨텐츠 API 캡처: {url[:80]}...")
                         except:
                             pass
-                # 상세 설명 컨텐츠 API 캡처
-                elif '/contents/' in url and response.status == 200:
-                    try:
-                        data = await response.json()
-                        if 'renderContent' in data:
-                            content_data = data
-                            self.logger.debug(f"컨텐츠 API 캡처: {url[:80]}...")
-                    except:
-                        pass
+                except Exception as e:
+                    self.logger.debug(f"응답 캡처 실패: {e}")
+
+            self.page.on('response', capture_product_response)
+
+            try:
+                await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
+                for _ in range(20):
+                    if product_data:
+                        break
+                    await asyncio.sleep(0.5)
             except Exception as e:
-                self.logger.debug(f"응답 캡처 실패: {e}")
-
-        self.page.on('response', capture_product_response)
-
-        try:
-            # domcontentloaded로 변경하여 빠른 로딩, 이후 API 응답 대기
-            await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
-
-            # API 응답 대기 (최대 10초)
-            for _ in range(20):
-                if product_data:
-                    break
-                await asyncio.sleep(0.5)
-        except Exception as e:
-            self.logger.warning(f"페이지 로딩 중 오류: {e}")
-            # 타임아웃이어도 API 응답이 캡처되었을 수 있으므로 추가 대기
-            await asyncio.sleep(2)
-        finally:
-            self.page.remove_listener('response', capture_product_response)
+                self.logger.warning(f"페이지 로딩 중 오류: {e}")
+                await asyncio.sleep(2)
+            finally:
+                self.page.remove_listener('response', capture_product_response)
 
         if product_data:
             # 원산지
@@ -492,7 +674,7 @@ class NaverSmartStoreCollector(BaseCollector):
                         extra_images.append(img_url)
                 product.extra_info['extra_images'] = extra_images
 
-        # 상세 설명 이미지 수집 (renderContent에서 추출)
+        # 상세 설명 수집 (renderContent에서 이미지 + 텍스트 추출)
         if content_data:
             render_content = content_data.get('renderContent', '')
             if render_content:
@@ -504,8 +686,28 @@ class NaverSmartStoreCollector(BaseCollector):
                     product.extra_info['detail_images'] = detail_images
                     self.logger.debug(f"상세 이미지 {len(detail_images)}개 수집")
 
+                # HTML에서 텍스트 추출 (태그 제거)
+                desc_text = re.sub(r'<style[^>]*>.*?</style>', '', render_content, flags=re.DOTALL)
+                desc_text = re.sub(r'<script[^>]*>.*?</script>', '', desc_text, flags=re.DOTALL)
+                desc_text = re.sub(r'<br\s*/?>', '\n', desc_text)
+                desc_text = re.sub(r'</p>', '\n', desc_text)
+                desc_text = re.sub(r'</div>', '\n', desc_text)
+                desc_text = re.sub(r'<[^>]+>', '', desc_text)
+                desc_text = re.sub(r'&nbsp;', ' ', desc_text)
+                desc_text = re.sub(r'&amp;', '&', desc_text)
+                desc_text = re.sub(r'&lt;', '<', desc_text)
+                desc_text = re.sub(r'&gt;', '>', desc_text)
+                desc_text = re.sub(r'\n{3,}', '\n\n', desc_text)
+                desc_text = desc_text.strip()
+                if desc_text:
+                    product.extra_info['description'] = desc_text
+                    self.logger.debug(f"상세설명 텍스트 {len(desc_text)}자 수집")
+
         # 옵션 수집 - optionCombinations에서 추출 (API 기반)
-        if product_data and product.extra_info.get('option_usable', False):
+        # API 응답의 optionUsable 사용 (page 2+ 상품도 옵션 수집 가능)
+        option_usable = product_data.get('optionUsable', False) if product_data else product.extra_info.get('option_usable', False)
+        product.extra_info['option_usable'] = option_usable
+        if product_data and option_usable:
             option_combinations = product_data.get('optionCombinations', [])
             if option_combinations:
                 # options 필드에서 groupName으로 optionName1/optionName2가 색상인지 사이즈인지 판별

@@ -52,11 +52,8 @@ class JoomExcelExporter:
             'Brand',            # 브랜드
             'Color',            # 색상 (영문)
             'Size',             # 사이즈
-            'Option1_Name',     # 첫 번째 옵션 원본 이름
             'Option1_Value',    # 첫 번째 옵션 값
-            'Option2_Name',     # 두 번째 옵션 원본 이름
             'Option2_Value',    # 두 번째 옵션 값
-            'Option3_Name',     # 세 번째 옵션 원본 이름
             'Option3_Value',    # 세 번째 옵션 값
             'Price',            # 정가
             'Sale_Price',       # 판매가
@@ -99,6 +96,7 @@ class JoomExcelExporter:
                 'Sole',             # 솔
                 'ReviewCount',      # 리뷰 개수
                 'Rating',           # 평점
+                'Description',      # 상세 설명 텍스트
             ]
 
         # 공통 마지막 헤더
@@ -253,24 +251,18 @@ class JoomExcelExporter:
                 variant_parts.append(str(size).replace(' ', ''))
             variant_sku = '-'.join(variant_parts)
 
-            # option_data를 순서대로 Option1/2/3에 배분
+            # option_data를 순서대로 Option1/2/3 Value에 배분
             opt_items = list(option_data.items()) if option_data else []
-            opt1_name = opt_items[0][0] if len(opt_items) > 0 else ''
             opt1_value = opt_items[0][1] if len(opt_items) > 0 else ''
-            opt2_name = opt_items[1][0] if len(opt_items) > 1 else ''
             opt2_value = opt_items[1][1] if len(opt_items) > 1 else ''
-            opt3_name = opt_items[2][0] if len(opt_items) > 2 else ''
             opt3_value = opt_items[2][1] if len(opt_items) > 2 else ''
 
             data.update({
                 'Variant_SKU': variant_sku,
                 'Color': color_eng,
                 'Size': size,
-                'Option1_Name': opt1_name,
                 'Option1_Value': opt1_value,
-                'Option2_Name': opt2_name,
                 'Option2_Value': opt2_value,
-                'Option3_Name': opt3_name,
                 'Option3_Value': opt3_value,
                 'Additional_Price': additional_price,
                 'Total_Price': data['Sale_Price'] + additional_price,
@@ -283,11 +275,8 @@ class JoomExcelExporter:
                 'Variant_SKU': product_id,
                 'Color': '',
                 'Size': '',
-                'Option1_Name': '',
                 'Option1_Value': '',
-                'Option2_Name': '',
                 'Option2_Value': '',
-                'Option3_Name': '',
                 'Option3_Value': '',
                 'Additional_Price': 0,
                 'Total_Price': data['Sale_Price'],
@@ -328,6 +317,7 @@ class JoomExcelExporter:
                 'Sole': extra_info.get('sole', ''),
                 'ReviewCount': extra_info.get('review_count', 0),
                 'Rating': extra_info.get('rating', 0),
+                'Description': extra_info.get('description', ''),
             })
 
         return data
@@ -353,11 +343,8 @@ class JoomExcelExporter:
             'Brand': 15,
             'Color': 12,
             'Size': 10,
-            'Option1_Name': 15,
             'Option1_Value': 20,
-            'Option2_Name': 15,
             'Option2_Value': 20,
-            'Option3_Name': 15,
             'Option3_Value': 20,
             'Price': 12,
             'Sale_Price': 12,

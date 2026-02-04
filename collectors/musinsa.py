@@ -318,7 +318,16 @@ class MusinsaCollector(BaseCollector):
             product.extra_info['review_count'] = d.get('totalCount', 0)
             product.extra_info['rating'] = d.get('satisfactionScore', 0)
 
-        # 4. 상세 설명 이미지 수집 (DOM에서 추출)
+        # 4. 상세 설명 영역 로드 (lazy-load 트리거)
+        # 상세 설명 영역은 IntersectionObserver로 스크롤 시 렌더링됨
+        try:
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1)
+            await self.page.wait_for_selector('[class*="Contents__StyledInner"]', timeout=3000)
+        except:
+            pass  # 타임아웃이어도 다른 셀렉터로 시도
+
+        # 5. 상세 설명 이미지 수집 (DOM에서 추출)
         try:
             detail_images = await self.page.evaluate("""
                 () => {
@@ -375,7 +384,7 @@ class MusinsaCollector(BaseCollector):
         except Exception as e:
             self.logger.debug(f"상세 이미지 수집 실패 [{goods_no}]: {e}")
 
-        # 5. 상세 설명 텍스트 수집 (DOM에서 추출)
+        # 6. 상세 설명 텍스트 수집 (DOM에서 추출)
         try:
             description_text = await self.page.evaluate("""
                 () => {
