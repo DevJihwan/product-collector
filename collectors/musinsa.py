@@ -201,11 +201,18 @@ class MusinsaCollector(BaseCollector):
         # 상세 페이지 방문 (DOM 추출 + 쿠키 획득)
         try:
             await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
+            await asyncio.sleep(0.5)  # 동적 콘텐츠 로드 대기
         except:
             pass
 
         # 0. 카테고리 정보 수집 (DOM에서 추출)
         try:
+            # 카테고리 컨테이너가 로드될 때까지 대기
+            try:
+                await self.page.wait_for_selector('[class*="Category__Wrap"]', timeout=3000)
+            except:
+                pass
+
             category = await self.page.evaluate("""
                 () => {
                     const container = document.querySelector('[class*="Category__Wrap"]');
@@ -427,80 +434,96 @@ class MusinsaCollector(BaseCollector):
         options = []
 
         try:
-            # 1. 옵션 드롭다운 클릭하여 품절 정보 추출
+            # 1. 드롭다운에서 품절 정보 추출 (1차 옵션 선택 후 2차 드롭다운 확인)
             sold_out_set = set()
             try:
-                # 드롭다운 트리거 찾기 및 클릭
-                dropdown_selectors = [
-                    '[data-mds="DropdownTriggerInput"]',
-                    '[data-mds="StaticDropdownMenu"] input',
-                    'input[placeholder="사이즈"]',
-                    'input[placeholder="색상"]',
-                ]
-                dropdown_found = False
-                for selector in dropdown_selectors:
-                    try:
-                        dropdown = await self.page.wait_for_selector(selector, timeout=1500)
-                        if dropdown:
-                            await dropdown.scroll_into_view_if_needed()
-                            await dropdown.click()
+                all_dropdowns = await self.page.query_selector_all('[data-mds="DropdownTriggerInput"]')
+                if not all_dropdowns:
+                    all_dropdowns = await self.page.query_selector_all('input[placeholder="사이즈"], input[placeholder="색상"]')
+
+                self.logger.debug(f"드롭다운 {len(all_dropdowns)}개 발견")
+
+                if len(all_dropdowns) >= 2:
+                    # 2개 이상 드롭다운: 1차 옵션 선택 후 2차 드롭다운에서 품절 확인
+                    first_dropdown = all_dropdowns[0]
+                    await first_dropdown.scroll_into_view_if_needed()
+                    await first_dropdown.click()
+                    await asyncio.sleep(0.5)
+
+                    # 1차 옵션 첫 번째 항목 선택
+                    first_option = await self.page.query_selector('[data-mds="StaticDropdownMenuItem"]')
+                    if first_option:
+                        await first_option.click()
+                        await asyncio.sleep(0.5)
+
+                        # 2차 드롭다운 찾기 (placeholder="사이즈"로 직접 찾기)
+                        size_dropdown = await self.page.query_selector('input[placeholder="사이즈"]')
+                        if size_dropdown:
+                            await size_dropdown.scroll_into_view_if_needed()
+                            await size_dropdown.click()
                             await asyncio.sleep(0.5)
-                            dropdown_found = True
-                            break
-                    except:
-                        continue
 
-                # DOM에서 품절 정보 추출
-                sold_out_options = await self.page.evaluate("""
-                    () => {
-                        const soldOutSet = new Set();
+                            # 2차 드롭다운에서 품절 옵션 추출
+                            dropdown_soldout = await self.page.evaluate("""
+                                () => {
+                                    const soldOutSet = new Set();
+                                    const optionItems = document.querySelectorAll('[data-mds="StaticDropdownMenuItem"]');
+                                    for (const item of optionItems) {
+                                        const text = item.textContent || '';
+                                        const hasSoldOutText = text.includes('(품절)') || text.includes('품절');
+                                        if (hasSoldOutText) {
+                                            const optionValue = text.replace(/\\s*\\(품절\\).*$/, '').trim();
+                                            if (optionValue) {
+                                                soldOutSet.add(optionValue);
+                                            }
+                                        }
+                                    }
+                                    return Array.from(soldOutSet);
+                                }
+                            """)
 
-                        // 방법 1: 드롭다운 메뉴 아이템에서 찾기
-                        const optionItems = document.querySelectorAll('[data-mds="StaticDropdownMenuItem"]');
-                        for (const item of optionItems) {
-                            const text = item.textContent || '';
-                            const hasGrayText = item.querySelector('.text-gray-400');
-                            const hasSoldOutText = text.includes('(품절)') || text.includes('품절');
+                            if dropdown_soldout:
+                                sold_out_set.update(dropdown_soldout)
+                                self.logger.debug(f"2차 드롭다운 품절: {dropdown_soldout}")
 
-                            if (hasGrayText || hasSoldOutText) {
-                                const match = text.match(/^(\\d+)/);
-                                if (match) {
-                                    soldOutSet.add(match[1]);
-                                } else {
+                            await self.page.keyboard.press('Escape')
+                            await asyncio.sleep(0.2)
+                    else:
+                        await self.page.keyboard.press('Escape')
+
+                elif len(all_dropdowns) == 1:
+                    # 1개 드롭다운: 직접 품절 확인
+                    dropdown = all_dropdowns[0]
+                    await dropdown.scroll_into_view_if_needed()
+                    await dropdown.click()
+                    await asyncio.sleep(0.5)
+
+                    dropdown_soldout = await self.page.evaluate("""
+                        () => {
+                            const soldOutSet = new Set();
+                            const optionItems = document.querySelectorAll('[data-mds="StaticDropdownMenuItem"]');
+                            for (const item of optionItems) {
+                                const text = item.textContent || '';
+                                const hasSoldOutText = text.includes('(품절)') || text.includes('품절');
+                                if (hasSoldOutText) {
                                     const optionValue = text.replace(/\\s*\\(품절\\).*$/, '').trim();
                                     if (optionValue) {
                                         soldOutSet.add(optionValue);
                                     }
                                 }
                             }
+                            return Array.from(soldOutSet);
                         }
+                    """)
 
-                        // 방법 2: 드롭다운이 안 열렸으면 전체 페이지에서 품절 텍스트 찾기
-                        if (soldOutSet.size === 0) {
-                            const allText = document.body.innerText;
-                            const soldOutMatches = allText.match(/(\\d+)\\s*\\(품절\\)/g);
-                            if (soldOutMatches) {
-                                for (const match of soldOutMatches) {
-                                    const num = match.match(/^(\\d+)/);
-                                    if (num) {
-                                        soldOutSet.add(num[1]);
-                                    }
-                                }
-                            }
-                        }
+                    if dropdown_soldout:
+                        sold_out_set.update(dropdown_soldout)
 
-                        return Array.from(soldOutSet);
-                    }
-                """)
-
-                sold_out_set = set(sold_out_options) if sold_out_options else set()
-                if sold_out_set:
-                    self.log(f"    품절 옵션: {len(sold_out_set)}개 ({', '.join(sorted(sold_out_set, key=lambda x: int(x) if x.isdigit() else 0)[:5])}...)")
-
-                # 드롭다운 닫기
-                if dropdown_found:
                     await self.page.keyboard.press('Escape')
                     await asyncio.sleep(0.2)
+
+                if sold_out_set:
+                    self.log(f"    품절 옵션: {len(sold_out_set)}개 ({', '.join(list(sold_out_set)[:5])}{'...' if len(sold_out_set) > 5 else ''})")
 
             except Exception as e:
                 self.log(f"    ⚠️ 품절 정보 추출 실패: {e}")
@@ -517,8 +540,28 @@ class MusinsaCollector(BaseCollector):
                 data = await response.json()
                 api_data = data.get('data', {})
 
+                # basic에서 옵션값별 sequence 맵 생성 (정렬용)
+                sequence_map = {}  # {옵션값: sequence}
+                basic_list = api_data.get('basic', [])
+                for basic in basic_list:
+                    for opt_val in basic.get('optionValues', []):
+                        name = opt_val.get('name', '')
+                        seq = opt_val.get('sequence', 0)
+                        sequence_map[name] = seq
+
                 # optionItems에서 직접 옵션 조합 추출
                 option_items = api_data.get('optionItems', [])
+
+                # optionItems를 sequence 순서로 정렬
+                def get_sort_key(item):
+                    opt_values = item.get('optionValues', [])
+                    keys = []
+                    for ov in opt_values:
+                        name = ov.get('name', '')
+                        keys.append(sequence_map.get(name, 999))
+                    return tuple(keys)
+
+                option_items = sorted(option_items, key=get_sort_key)
 
                 if option_items:
                     for item in option_items:
