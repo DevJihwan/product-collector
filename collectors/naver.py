@@ -26,6 +26,7 @@ class NaverSmartStoreCollector(BaseCollector):
         self.store_name = ""
         self.store_type = "brand"  # brand or smartstore
         self.channel_id = None  # 카테고리 로드 시 캡처
+        self.current_store_category = ""  # 현재 수집 중인 스토어 카테고리명
 
     def parse_url(self, url: str) -> Dict[str, Any]:
         """
@@ -166,6 +167,27 @@ class NaverSmartStoreCollector(BaseCollector):
                             total_count = sub_data.get('totalCount', 0)
                             page_size = sub_data.get('pageSize', 40)
                             break
+
+                # 스토어 카테고리 이름 추출 (categoryNames에서)
+                category_names = state_data.get('categoryNames', {})
+                if category_names:
+                    a_data = category_names.get('A', {})
+                    if a_data and url_info.get('category_id'):
+                        cat_id = url_info['category_id']
+                        # categoryNames에서 해당 카테고리 ID의 이름 찾기
+                        if cat_id in a_data:
+                            self.current_store_category = a_data[cat_id]
+                            self.logger.debug(f"스토어 카테고리: {self.current_store_category}")
+                        else:
+                            # storeCategory.firstCategories에서 찾기
+                            store_cat = state_data.get('storeCategory', {})
+                            a_store = store_cat.get('A', {})
+                            first_cats = a_store.get('firstCategories', [])
+                            for cat in first_cats:
+                                if cat.get('id') == cat_id or cat.get('categoryId') == cat_id:
+                                    self.current_store_category = cat.get('name', '')
+                                    self.logger.debug(f"스토어 카테고리 (firstCategories): {self.current_store_category}")
+                                    break
 
                 # __PRELOADED_STATE__에서 channel_id 폴백 추출
                 if not self.channel_id:
@@ -326,6 +348,14 @@ class NaverSmartStoreCollector(BaseCollector):
                 else:
                     product_url = f"https://smartstore.naver.com/{self.store_name}/products/{product_id}"
 
+                # 카테고리 정보: 스토어 카테고리 또는 네이버 쇼핑 카테고리
+                category_name = self.current_store_category
+                if not category_name:
+                    # 폴백: 네이버 쇼핑 카테고리
+                    item_category = item.get('category', {})
+                    if item_category:
+                        category_name = item_category.get('wholeCategoryName', '')
+
                 product = ProductInfo(
                     product_id=product_id,
                     product_name=item.get('name', ''),
@@ -339,6 +369,7 @@ class NaverSmartStoreCollector(BaseCollector):
                         'option_usable': item.get('optionUsable', False),
                         'review_count': item.get('reviewAmount', {}).get('totalReviewCount', 0),
                         'rating': item.get('reviewAmount', {}).get('averageReviewScore', 0),
+                        'category': category_name,  # 카테고리 추가
                     }
                 )
                 products.append(product)
@@ -373,6 +404,7 @@ class NaverSmartStoreCollector(BaseCollector):
                     url=product_url,
                     extra_info={
                         'option_usable': False,  # collect_product_detail에서 API 응답으로 갱신됨
+                        'category': self.current_store_category,  # 스토어 카테고리
                     }
                 )
                 products.append(product)
@@ -627,6 +659,66 @@ class NaverSmartStoreCollector(BaseCollector):
             finally:
                 self.page.remove_listener('response', capture_product_response)
 
+        # 카테고리 정보 수집 (DOM 브레드크럼에서 추출) - 페이지 방문 후 항상 시도
+        if self.page and not product.extra_info.get('category'):
+            try:
+                category = await self.page.evaluate("""
+                    () => {
+                        // 브레드크럼 영역에서 카테고리 추출
+                        // 홈 > NEW신작(총 53개) 형태
+                        const breadcrumbSelectors = [
+                            '[class*="breadcrumb"]',
+                            '[class*="Breadcrumb"]',
+                            '[class*="_1cW8Nvw5xU"]',  // 네이버 스마트스토어 브레드크럼 클래스
+                            'nav[aria-label*="경로"]',
+                            '[role="navigation"] ol',
+                        ];
+
+                        for (const sel of breadcrumbSelectors) {
+                            const container = document.querySelector(sel);
+                            if (container) {
+                                const links = container.querySelectorAll('a, span, li');
+                                const parts = [];
+                                for (const el of links) {
+                                    let text = el.textContent.trim();
+                                    // 불필요한 텍스트 제거
+                                    if (text && text !== '>' && text !== '/' &&
+                                        !text.includes('다른상품') &&
+                                        text.length < 50) {
+                                        // 괄호 안 숫자 제거 (총 53개 등)
+                                        text = text.replace(/\\(총\\s*\\d+개\\)/g, '').trim();
+                                        if (text && !parts.includes(text)) {
+                                            parts.push(text);
+                                        }
+                                    }
+                                }
+                                if (parts.length > 1) {
+                                    // '홈' 제거하고 나머지 반환
+                                    const filtered = parts.filter(p => p !== '홈' && p !== 'Home');
+                                    return filtered.join('>');
+                                }
+                            }
+                        }
+
+                        // 폴백: 페이지에서 카테고리 드롭다운 텍스트 추출
+                        const dropdown = document.querySelector('[class*="category"] button, [class*="Category"] button');
+                        if (dropdown) {
+                            const text = dropdown.textContent.trim();
+                            if (text && !text.includes('다른상품')) {
+                                return text.replace(/\\(총\\s*\\d+개\\)/g, '').trim();
+                            }
+                        }
+
+                        return '';
+                    }
+                """)
+
+                if category:
+                    product.extra_info['category'] = category
+                    self.logger.debug(f"카테고리 수집 (DOM): {category}")
+            except Exception as e:
+                self.logger.debug(f"DOM 카테고리 추출 실패: {e}")
+
         if product_data:
             # 원산지
             origin_info = product_data.get('originAreaInfo', {})
@@ -702,6 +794,77 @@ class NaverSmartStoreCollector(BaseCollector):
                 if desc_text:
                     product.extra_info['description'] = desc_text
                     self.logger.debug(f"상세설명 텍스트 {len(desc_text)}자 수집")
+
+        # 상세 이미지 폴백: content_data가 없으면 DOM에서 추출 시도
+        if not product.extra_info.get('detail_images') and self.page:
+            try:
+                # 스크롤하여 lazy-load 트리거
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)
+
+                # DOM에서 상세 이미지 추출
+                dom_detail_images = await self.page.evaluate("""
+                    () => {
+                        const images = [];
+                        const seen = new Set();
+
+                        // 상세설명 영역 선택자들
+                        const detailSelectors = [
+                            '[class*="ProductContent"]',
+                            '[class*="product-content"]',
+                            '[class*="detail-content"]',
+                            '[class*="se-main-container"]',
+                            '[class*="se_component"]',
+                            'div[id*="detail"]',
+                            'div[id*="content"]',
+                        ];
+
+                        for (const sel of detailSelectors) {
+                            const container = document.querySelector(sel);
+                            if (container) {
+                                const imgs = container.querySelectorAll('img');
+                                for (const img of imgs) {
+                                    const src = img.src || img.dataset.src || img.dataset.lazySrc || '';
+                                    if (src && src.startsWith('http') &&
+                                        !src.includes('data:image') &&
+                                        !seen.has(src) &&
+                                        !src.includes('logo') &&
+                                        !src.includes('icon')) {
+                                        seen.add(src);
+                                        images.push(src);
+                                    }
+                                }
+                                if (images.length > 0) break;
+                            }
+                        }
+
+                        // 폴백: 전체 페이지에서 상세 이미지 패턴 찾기
+                        if (images.length === 0) {
+                            const allImgs = document.querySelectorAll('img');
+                            for (const img of allImgs) {
+                                const src = img.src || '';
+                                // 상세 이미지 패턴 (일정 크기 이상, 상품 이미지가 아닌 것)
+                                if (src.startsWith('http') &&
+                                    (src.includes('proxy-smartstore') ||
+                                     src.includes('esmplus') ||
+                                     src.includes('shop-phinf')) &&
+                                    !seen.has(src) &&
+                                    img.naturalWidth > 300) {
+                                    seen.add(src);
+                                    images.push(src);
+                                }
+                            }
+                        }
+
+                        return images.slice(0, 50);  // 최대 50개
+                    }
+                """)
+
+                if dom_detail_images:
+                    product.extra_info['detail_images'] = dom_detail_images
+                    self.logger.debug(f"상세 이미지 (DOM 폴백) {len(dom_detail_images)}개 수집")
+            except Exception as e:
+                self.logger.debug(f"DOM 상세 이미지 추출 실패: {e}")
 
         # 옵션 수집 - optionCombinations에서 추출 (API 기반)
         # API 응답의 optionUsable 사용 (page 2+ 상품도 옵션 수집 가능)
