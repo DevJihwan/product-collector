@@ -348,13 +348,19 @@ class NaverSmartStoreCollector(BaseCollector):
                 else:
                     product_url = f"https://smartstore.naver.com/{self.store_name}/products/{product_id}"
 
-                # 카테고리 정보: 스토어 카테고리 또는 네이버 쇼핑 카테고리
-                category_name = self.current_store_category
-                if not category_name:
-                    # 폴백: 네이버 쇼핑 카테고리
-                    item_category = item.get('category', {})
-                    if item_category:
-                        category_name = item_category.get('wholeCategoryName', '')
+                # 카테고리 정보: categoryNavigations에서 추출 (상품별 스토어 카테고리)
+                cat_nav = item.get('categoryNavigations', [])
+                if cat_nav:
+                    # categoryNavigations에서 카테고리 이름들을 > 로 연결
+                    category_name = '>'.join([c.get('categoryName', '') for c in cat_nav if c.get('categoryName')])
+                else:
+                    # 폴백1: 카테고리 목록 페이지의 스토어 카테고리
+                    category_name = self.current_store_category
+                    if not category_name:
+                        # 폴백2: 네이버 쇼핑 카테고리
+                        item_category = item.get('category', {})
+                        if item_category:
+                            category_name = item_category.get('wholeCategoryName', '')
 
                 product = ProductInfo(
                     product_id=product_id,
@@ -659,65 +665,27 @@ class NaverSmartStoreCollector(BaseCollector):
             finally:
                 self.page.remove_listener('response', capture_product_response)
 
-        # 카테고리 정보 수집 (DOM 브레드크럼에서 추출) - 페이지 방문 후 항상 시도
+        # 카테고리 정보 수집 - 페이지 방문 후 __PRELOADED_STATE__에서 추출
         if self.page and not product.extra_info.get('category'):
             try:
-                category = await self.page.evaluate("""
-                    () => {
-                        // 브레드크럼 영역에서 카테고리 추출
-                        // 홈 > NEW신작(총 53개) 형태
-                        const breadcrumbSelectors = [
-                            '[class*="breadcrumb"]',
-                            '[class*="Breadcrumb"]',
-                            '[class*="_1cW8Nvw5xU"]',  // 네이버 스마트스토어 브레드크럼 클래스
-                            'nav[aria-label*="경로"]',
-                            '[role="navigation"] ol',
-                        ];
+                # __PRELOADED_STATE__에서 categoryNavigations 추출
+                html = await self.page.content()
+                preload_match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*({.+?});?\s*</script>', html, re.DOTALL)
+                if preload_match:
+                    state_data = json.loads(preload_match.group(1))
 
-                        for (const sel of breadcrumbSelectors) {
-                            const container = document.querySelector(sel);
-                            if (container) {
-                                const links = container.querySelectorAll('a, span, li');
-                                const parts = [];
-                                for (const el of links) {
-                                    let text = el.textContent.trim();
-                                    // 불필요한 텍스트 제거
-                                    if (text && text !== '>' && text !== '/' &&
-                                        !text.includes('다른상품') &&
-                                        text.length < 50) {
-                                        // 괄호 안 숫자 제거 (총 53개 등)
-                                        text = text.replace(/\\(총\\s*\\d+개\\)/g, '').trim();
-                                        if (text && !parts.includes(text)) {
-                                            parts.push(text);
-                                        }
-                                    }
-                                }
-                                if (parts.length > 1) {
-                                    // '홈' 제거하고 나머지 반환
-                                    const filtered = parts.filter(p => p !== '홈' && p !== 'Home');
-                                    return filtered.join('>');
-                                }
-                            }
-                        }
+                    # simpleProductForDetailPage에서 categoryNavigations 찾기
+                    simple_prod = state_data.get('simpleProductForDetailPage', {})
+                    a_data = simple_prod.get('A', {})
+                    cat_nav = a_data.get('categoryNavigations', [])
 
-                        // 폴백: 페이지에서 카테고리 드롭다운 텍스트 추출
-                        const dropdown = document.querySelector('[class*="category"] button, [class*="Category"] button');
-                        if (dropdown) {
-                            const text = dropdown.textContent.trim();
-                            if (text && !text.includes('다른상품')) {
-                                return text.replace(/\\(총\\s*\\d+개\\)/g, '').trim();
-                            }
-                        }
-
-                        return '';
-                    }
-                """)
-
-                if category:
-                    product.extra_info['category'] = category
-                    self.logger.debug(f"카테고리 수집 (DOM): {category}")
+                    if cat_nav:
+                        category = '>'.join([c.get('categoryName', '') for c in cat_nav if c.get('categoryName')])
+                        if category:
+                            product.extra_info['category'] = category
+                            self.logger.debug(f"카테고리 수집 (PRELOADED_STATE): {category}")
             except Exception as e:
-                self.logger.debug(f"DOM 카테고리 추출 실패: {e}")
+                self.logger.debug(f"PRELOADED_STATE 카테고리 추출 실패: {e}")
 
         if product_data:
             # 원산지
