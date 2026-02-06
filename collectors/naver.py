@@ -339,6 +339,10 @@ class NaverSmartStoreCollector(BaseCollector):
                 sale_price = benefits.get('discountedSalePrice', 0) or item.get('salePrice', 0)
                 original_price = item.get('salePrice', 0)
 
+                # 가격 정렬: 높은 가격을 price에, 낮은 가격을 sale_price에
+                if sale_price > original_price and original_price > 0:
+                    original_price, sale_price = sale_price, original_price
+
                 brand_info = item.get('naverShoppingSearchInfo', {})
                 brand = brand_info.get('brandName', '')
 
@@ -400,12 +404,18 @@ class NaverSmartStoreCollector(BaseCollector):
                 else:
                     product_url = f"https://smartstore.naver.com/{self.store_name}/products/{product_id}"
 
+                # 가격 정렬: 높은 가격을 price에, 낮은 가격을 sale_price에
+                price = item.get('price', 0)
+                sale_price = item.get('salePrice', 0)
+                if sale_price > price and price > 0:
+                    price, sale_price = sale_price, price
+
                 product = ProductInfo(
                     product_id=product_id,
                     product_name=item.get('name', ''),
                     brand=self.store_name,
-                    price=item.get('price', 0),
-                    sale_price=item.get('salePrice', 0),
+                    price=price,
+                    sale_price=sale_price,
                     image_url=item.get('imgUrl', ''),
                     url=product_url,
                     extra_info={
@@ -742,6 +752,26 @@ class NaverSmartStoreCollector(BaseCollector):
                 detail_images = re.findall(r'<img[^>]+src="([^"]+)"', render_content)
                 # data:image 제외, http로 시작하는 URL만 필터링
                 detail_images = [url for url in detail_images if url.startswith('http')]
+
+                # 스토어 공통 배너/프로모션 이미지 필터링
+                banner_patterns = [
+                    'officialsite', 'top_renewal', 'flavor%20of%20the%20month',
+                    'flavor of the month', '/banner/', '/promotion/', '/event/', '/common/'
+                ]
+                def is_product_image(url):
+                    lower_url = url.lower()
+                    # 배너 패턴 제외
+                    if any(pattern in lower_url for pattern in banner_patterns):
+                        return False
+                    # shop-phinf.pstatic.net 도메인은 상품 이미지
+                    if 'shop-phinf.pstatic.net' in lower_url:
+                        return True
+                    # gi.esmplus.com은 상품별 상세 이미지일 수 있음 (fileSize 체크는 API에서 불가)
+                    # 파일명에 상품 관련 키워드가 있으면 포함
+                    return True
+
+                detail_images = [url for url in detail_images if is_product_image(url)]
+
                 if detail_images:
                     product.extra_info['detail_images'] = detail_images
                     self.logger.debug(f"상세 이미지 {len(detail_images)}개 수집")
@@ -776,12 +806,29 @@ class NaverSmartStoreCollector(BaseCollector):
                         const images = [];
                         const seen = new Set();
 
+                        // 스토어 공통 배너/프로모션 이미지 필터링 패턴
+                        const bannerPatterns = [
+                            'officialsite',
+                            'top_renewal',
+                            'Flavor%20of%20the%20Month',
+                            'Flavor of the Month',
+                            '/banner/',
+                            '/promotion/',
+                            '/event/',
+                            '/common/',
+                        ];
+
+                        const isBannerImage = (src) => {
+                            const lowerSrc = src.toLowerCase();
+                            return bannerPatterns.some(pattern => lowerSrc.includes(pattern.toLowerCase()));
+                        };
+
                         // 상세설명 영역 선택자들
                         const detailSelectors = [
+                            '[class*="se-main-container"]',
                             '[class*="ProductContent"]',
                             '[class*="product-content"]',
                             '[class*="detail-content"]',
-                            '[class*="se-main-container"]',
                             '[class*="se_component"]',
                             'div[id*="detail"]',
                             'div[id*="content"]',
@@ -790,34 +837,57 @@ class NaverSmartStoreCollector(BaseCollector):
                         for (const sel of detailSelectors) {
                             const container = document.querySelector(sel);
                             if (container) {
-                                const imgs = container.querySelectorAll('img');
-                                for (const img of imgs) {
-                                    const src = img.src || img.dataset.src || img.dataset.lazySrc || '';
-                                    if (src && src.startsWith('http') &&
-                                        !src.includes('data:image') &&
-                                        !seen.has(src) &&
-                                        !src.includes('logo') &&
-                                        !src.includes('icon')) {
-                                        seen.add(src);
-                                        images.push(src);
+                                // se-module-image-link에서 data-linkdata 확인
+                                const imageLinks = container.querySelectorAll('a.se-module-image-link[data-linkdata]');
+                                for (const link of imageLinks) {
+                                    try {
+                                        const linkData = JSON.parse(link.getAttribute('data-linkdata'));
+                                        const src = linkData.src || '';
+                                        const fileSize = parseInt(linkData.fileSize) || 0;
+                                        const height = parseInt(linkData.originalHeight) || 0;
+
+                                        // 상품 상세 이미지 조건: 파일크기 > 0 또는 높이 > 2000
+                                        if (src && src.startsWith('http') &&
+                                            !seen.has(src) &&
+                                            !isBannerImage(src) &&
+                                            (fileSize > 100000 || height > 2000 || src.includes('shop-phinf.pstatic.net'))) {
+                                            seen.add(src);
+                                            images.push(src);
+                                        }
+                                    } catch (e) {}
+                                }
+
+                                // 일반 img 태그도 확인 (shop-phinf 도메인 우선)
+                                if (images.length === 0) {
+                                    const imgs = container.querySelectorAll('img');
+                                    for (const img of imgs) {
+                                        const src = img.src || img.dataset.src || img.dataset.lazySrc || '';
+                                        if (src && src.startsWith('http') &&
+                                            !src.includes('data:image') &&
+                                            !seen.has(src) &&
+                                            !src.includes('logo') &&
+                                            !src.includes('icon') &&
+                                            !isBannerImage(src) &&
+                                            (src.includes('shop-phinf.pstatic.net') || img.naturalHeight > 2000)) {
+                                            seen.add(src);
+                                            images.push(src);
+                                        }
                                     }
                                 }
+
                                 if (images.length > 0) break;
                             }
                         }
 
-                        // 폴백: 전체 페이지에서 상세 이미지 패턴 찾기
+                        // 폴백: 전체 페이지에서 shop-phinf 이미지 찾기
                         if (images.length === 0) {
                             const allImgs = document.querySelectorAll('img');
                             for (const img of allImgs) {
                                 const src = img.src || '';
-                                // 상세 이미지 패턴 (일정 크기 이상, 상품 이미지가 아닌 것)
                                 if (src.startsWith('http') &&
-                                    (src.includes('proxy-smartstore') ||
-                                     src.includes('esmplus') ||
-                                     src.includes('shop-phinf')) &&
+                                    src.includes('shop-phinf.pstatic.net') &&
                                     !seen.has(src) &&
-                                    img.naturalWidth > 300) {
+                                    !isBannerImage(src)) {
                                     seen.add(src);
                                     images.push(src);
                                 }
@@ -903,7 +973,32 @@ class NaverSmartStoreCollector(BaseCollector):
                 # 사이즈 순 정렬 (숫자인 경우)
                 options.sort(key=lambda x: int(x.size) if x.size.isdigit() else 0)
                 product.options = options
-                self.logger.debug(f"옵션 수집 (API): {len(options)}개")
+                self.logger.debug(f"옵션 수집 (API optionCombinations): {len(options)}개")
+
+            # simpleOptions 지원 (optionCombinations가 없는 경우)
+            elif not option_combinations:
+                simple_options = product_data.get('simpleOptions', [])
+                if simple_options:
+                    options = []
+                    for group in simple_options:
+                        group_name = group.get('groupName', '선택')
+                        opts = group.get('options', [])
+                        for opt in opts:
+                            opt_name = opt.get('name', '')
+                            opt_id = opt.get('id', '')
+                            # simpleOptions는 추가금액/재고 정보가 없는 경우가 많음
+                            # 기본값 사용
+                            options.append(ProductOption(
+                                color='',
+                                size=opt_name,
+                                additional_price=0,
+                                stock=100,  # 기본값
+                                sold_out=False,
+                                option_data={group_name: opt_name, 'option_id': opt_id},
+                            ))
+                    if options:
+                        product.options = options
+                        self.logger.debug(f"옵션 수집 (API simpleOptions): {len(options)}개")
 
         return product
 
