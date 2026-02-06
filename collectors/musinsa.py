@@ -358,14 +358,19 @@ class MusinsaCollector(BaseCollector):
                         return url;
                     };
 
-                    // URL 필터링 함수
+                    // URL 필터링 함수 (공통 배너 이미지 제외)
                     const filterUrls = (imgs) => {
                         return imgs.map(img => getImageUrl(img))
-                            .filter(url =>
-                                url &&
-                                url.startsWith('http') &&
-                                (url.includes('musinsa.com') || url.includes('msscdn.net'))
-                            );
+                            .filter(url => {
+                                if (!url || !url.startsWith('http')) return false;
+                                if (!url.includes('musinsa.com') && !url.includes('msscdn.net')) return false;
+
+                                // 공통/배너 이미지 제외
+                                if (url.includes('/display/images/common/')) return false;
+                                if (url.includes('/display/images/') && !url.includes('/prd_img/') && !url.includes('/detail_')) return false;
+
+                                return true;
+                            });
                     };
 
                     // 방법 1: 컨테이너에서 찾기
