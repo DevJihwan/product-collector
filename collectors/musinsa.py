@@ -358,22 +358,7 @@ class MusinsaCollector(BaseCollector):
                         return url;
                     };
 
-                    // URL 필터링 함수 (공통 배너 이미지 제외)
-                    const filterUrls = (imgs) => {
-                        return imgs.map(img => getImageUrl(img))
-                            .filter(url => {
-                                if (!url || !url.startsWith('http')) return false;
-                                if (!url.includes('musinsa.com') && !url.includes('msscdn.net')) return false;
-
-                                // 공통/배너 이미지 제외
-                                if (url.includes('/display/images/common/')) return false;
-                                if (url.includes('/display/images/') && !url.includes('/prd_img/') && !url.includes('/detail_')) return false;
-
-                                return true;
-                            });
-                    };
-
-                    // 방법 1: 컨테이너에서 찾기
+                    // 방법 1: 컨테이너에서 alt="content-img-XX" 패턴 이미지 찾기 (도메인 무관)
                     const containers = [
                         '[class*="Contents__StyledInner"]',
                         '[class*="product-detail"]',
@@ -386,25 +371,47 @@ class MusinsaCollector(BaseCollector):
                     for (const selector of containers) {
                         const container = document.querySelector(selector);
                         if (container) {
-                            // alt="content-img-XX" 패턴의 상품 상세 이미지만 선택
-                            let imgs = Array.from(container.querySelectorAll('img[alt^="content-img"]'));
-                            if (imgs.length === 0) {
-                                // 폴백: 모든 이미지
-                                imgs = Array.from(container.querySelectorAll('img'));
+                            // alt="content-img-XX" 패턴의 상품 상세 이미지 (외부 도메인 포함)
+                            const contentImgs = Array.from(container.querySelectorAll('img[alt^="content-img"]'));
+                            if (contentImgs.length > 0) {
+                                result = contentImgs
+                                    .map(img => getImageUrl(img))
+                                    .filter(url => url && url.startsWith('http'));
+                                if (result.length > 0) break;
                             }
-                            result = filterUrls(imgs);
-                            if (result.length > 0) break;
                         }
                     }
 
-                    // 방법 2: 컨테이너에서 못 찾으면 URL 패턴으로 상세 이미지 찾기
+                    // 방법 2: content-img 패턴이 없으면 무신사/msscdn 도메인 이미지 찾기
+                    if (result.length === 0) {
+                        for (const selector of containers) {
+                            const container = document.querySelector(selector);
+                            if (container) {
+                                const imgs = Array.from(container.querySelectorAll('img'));
+                                result = imgs
+                                    .map(img => getImageUrl(img))
+                                    .filter(url => {
+                                        if (!url || !url.startsWith('http')) return false;
+                                        if (!url.includes('musinsa.com') && !url.includes('msscdn.net')) return false;
+                                        // 공통/배너 이미지 제외
+                                        if (url.includes('/display/images/common/')) return false;
+                                        if (url.includes('/display/images/') && !url.includes('/prd_img/') && !url.includes('/detail_')) return false;
+                                        return true;
+                                    });
+                                if (result.length > 0) break;
+                            }
+                        }
+                    }
+
+                    // 방법 3: 컨테이너에서 못 찾으면 URL 패턴으로 상세 이미지 찾기
                     if (result.length === 0) {
                         const patternImgs = Array.from(document.querySelectorAll('img')).filter(img => {
                             const url = getImageUrl(img) || '';
-                            // prd_img 또는 detail_ 또는 display/images 패턴
-                            return url.includes('/prd_img/') || url.includes('/detail_') || url.includes('display/images');
+                            return url.includes('/prd_img/') || url.includes('/detail_');
                         });
-                        result = filterUrls(patternImgs);
+                        result = patternImgs
+                            .map(img => getImageUrl(img))
+                            .filter(url => url && url.startsWith('http'));
                     }
 
                     return result;
