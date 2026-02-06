@@ -338,19 +338,34 @@ class MusinsaCollector(BaseCollector):
         try:
             detail_images = await self.page.evaluate("""
                 () => {
+                    // 이미지 URL 추출 함수 (data-src 우선, thumbnails 경로 제거)
+                    const getImageUrl = (img) => {
+                        // 우선순위: data-src > data-fallback-src > src
+                        let url = img.getAttribute('data-src')
+                               || img.getAttribute('data-fallback-src')
+                               || img.src;
+
+                        if (!url) return null;
+
+                        // // 로 시작하면 https: 추가
+                        if (url.startsWith('//')) {
+                            url = 'https:' + url;
+                        }
+
+                        // thumbnails 경로 제거 (원본 이미지 URL 사용)
+                        url = url.replace('/thumbnails/images/', '/images/');
+
+                        return url;
+                    };
+
                     // URL 필터링 함수
                     const filterUrls = (imgs) => {
-                        return imgs.map(img => {
-                            let url = img.dataset.src || img.src;
-                            if (url && url.startsWith('//')) {
-                                url = 'https:' + url;
-                            }
-                            return url;
-                        }).filter(url =>
-                            url &&
-                            url.startsWith('http') &&
-                            (url.includes('musinsa.com') || url.includes('msscdn.net'))
-                        );
+                        return imgs.map(img => getImageUrl(img))
+                            .filter(url =>
+                                url &&
+                                url.startsWith('http') &&
+                                (url.includes('musinsa.com') || url.includes('msscdn.net'))
+                            );
                     };
 
                     // 방법 1: 컨테이너에서 찾기
@@ -366,7 +381,12 @@ class MusinsaCollector(BaseCollector):
                     for (const selector of containers) {
                         const container = document.querySelector(selector);
                         if (container) {
-                            const imgs = Array.from(container.querySelectorAll('img'));
+                            // alt="content-img-XX" 패턴의 상품 상세 이미지만 선택
+                            let imgs = Array.from(container.querySelectorAll('img[alt^="content-img"]'));
+                            if (imgs.length === 0) {
+                                // 폴백: 모든 이미지
+                                imgs = Array.from(container.querySelectorAll('img'));
+                            }
                             result = filterUrls(imgs);
                             if (result.length > 0) break;
                         }
@@ -375,8 +395,8 @@ class MusinsaCollector(BaseCollector):
                     // 방법 2: 컨테이너에서 못 찾으면 URL 패턴으로 상세 이미지 찾기
                     if (result.length === 0) {
                         const patternImgs = Array.from(document.querySelectorAll('img')).filter(img => {
-                            const url = img.src || img.dataset.src || '';
-                            // detail_ 또는 prd_img 또는 display/images 패턴
+                            const url = getImageUrl(img) || '';
+                            // prd_img 또는 detail_ 또는 display/images 패턴
                             return url.includes('/prd_img/') || url.includes('/detail_') || url.includes('display/images');
                         });
                         result = filterUrls(patternImgs);
