@@ -72,6 +72,22 @@ class MusinsaConfig:
     ITEMS_PER_PAGE = 60
 
 
+# 다이소몰 설정
+class DaisoConfig:
+    # 기본 URL
+    BASE_URL = "https://www.daisomall.co.kr"
+    CDN_URL = "https://cdn.daisomall.co.kr"
+
+    # 상품 목록 API
+    SEARCH_API = "https://www.daisomall.co.kr/ssn/search/SearchGoods"
+
+    # 상품 상세 URL
+    PRODUCT_URL = "https://www.daisomall.co.kr/pd/pdr/SCR_PDR_0001?pdNo={pd_no}"
+
+    # 페이지당 상품 수
+    ITEMS_PER_PAGE = 30
+
+
 # 네이버 스마트스토어 설정
 class NaverConfig:
     # 페이지당 상품 수
