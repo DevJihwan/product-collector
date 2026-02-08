@@ -241,24 +241,21 @@ class DaisoCollector(BaseCollector):
             await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
             await asyncio.sleep(2)
 
-            # DOM에서 상세 정보 추출
+            # 1단계: 기본 정보 추출 (카테고리, 썸네일, 상세 이미지)
             detail_info = await self.page.evaluate("""
                 () => {
                     const result = {
                         title: '',
                         category: '',
                         thumbnail_images: [],
-                        detail_images: [],
-                        attributes: {}
+                        detail_images: []
                     };
 
                     // 1. 브레드크럼 (카테고리 경로) 추출
-                    // .product-crumb, .el-breadcrumb, .crumbs 에서 찾기
                     const breadcrumbSelectors = ['.product-crumb', '.el-breadcrumb', '.crumbs'];
                     for (const sel of breadcrumbSelectors) {
                         const container = document.querySelector(sel);
                         if (container) {
-                            // 링크 또는 span에서 카테고리 텍스트 추출
                             const items = container.querySelectorAll('a, .el-breadcrumb__item span');
                             const categories = [];
                             items.forEach(item => {
@@ -284,26 +281,22 @@ class DaisoCollector(BaseCollector):
                         }
                     }
 
-                    // 3. 썸네일 이미지 (상품 이미지 4개)
-                    // .el-button img에서 상품 이미지만 추출 (상품 ID가 포함된 것만)
+                    // 3. 썸네일 이미지
                     const seenUrls = new Set();
                     const thumbBtnImgs = document.querySelectorAll('.el-button img');
                     thumbBtnImgs.forEach(img => {
                         let src = img.src || img.getAttribute('data-src') || '';
-                        // 쿼리 파라미터 제거하되 /dims/ 이전까지만
                         if (src.includes('/dims/')) {
                             src = src.split('/dims/')[0];
                         } else if (src.includes('?')) {
                             src = src.split('?')[0];
                         }
-                        // /file/PD/ 경로의 상품 이미지만 (상품ID_00_0X 패턴)
                         if (src && src.includes('cdn.daisomall') && src.includes('/file/PD/') && !seenUrls.has(src)) {
                             seenUrls.add(src);
                             result.thumbnail_images.push(src);
                         }
                     });
 
-                    // 방법2: .goods-swiper-wrap 내부 (썸네일이 없는 경우)
                     if (result.thumbnail_images.length === 0) {
                         const goodsSwiperImgs = document.querySelectorAll('.goods-swiper-wrap .swiper-slide:not(.swiper-slide-duplicate) img');
                         goodsSwiperImgs.forEach(img => {
@@ -335,23 +328,51 @@ class DaisoCollector(BaseCollector):
                         }
                     });
 
-                    // 5. 상품 속성 (용량, 원산지 등)
-                    const attrSelectors = ['.product-info', '.prd-info', '[class*="spec"]', '[class*="info"]'];
-                    for (const sel of attrSelectors) {
-                        const container = document.querySelector(sel);
-                        if (container) {
-                            const rows = container.querySelectorAll('tr, li, dl, .info-row');
+                    return result;
+                }
+            """)
+
+            # 2단계: '상품정보' 탭 클릭하여 상품정보 제공 고시 추출
+            await self.page.evaluate("""
+                () => {
+                    // '상품정보' 탭 찾아서 클릭
+                    const tabs = document.querySelectorAll('.el-tabs__item, [role="tab"]');
+                    for (const tab of tabs) {
+                        if (tab.textContent.trim().includes('상품정보')) {
+                            tab.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            await asyncio.sleep(0.5)  # 탭 전환 대기
+
+            # 3단계: 상품정보 제공 고시 테이블 추출
+            product_info_table = await self.page.evaluate("""
+                () => {
+                    const result = {};
+
+                    // .tab-cont.info 또는 상품정보 제공 고시 테이블 찾기
+                    const infoContainers = document.querySelectorAll('.tab-cont.info, [class*="info"]');
+                    for (const container of infoContainers) {
+                        const text = container.textContent;
+                        if (text.includes('상품정보 제공 고시') || text.includes('제조국')) {
+                            const rows = container.querySelectorAll('table tr');
                             rows.forEach(row => {
-                                const label = row.querySelector('th, dt, .label');
-                                const value = row.querySelector('td, dd, .value');
-                                if (label && value) {
-                                    const key = label.textContent.trim();
-                                    const val = value.textContent.trim();
-                                    if (key && val) {
-                                        result.attributes[key] = val;
+                                const th = row.querySelector('th');
+                                const td = row.querySelector('td');
+                                if (th && td) {
+                                    let key = th.textContent.trim();
+                                    let value = td.textContent.trim();
+                                    // 번호 제거 (예: "1. 내용물의 용량" → "내용물의 용량")
+                                    key = key.replace(/^\\d+\\.\\s*/, '');
+                                    if (key && value && value !== '상세페이지 참조') {
+                                        result[key] = value;
                                     }
                                 }
                             });
+                            break;
                         }
                     }
 
@@ -363,25 +384,28 @@ class DaisoCollector(BaseCollector):
             if detail_info.get('title') and not product.product_name:
                 product.product_name = detail_info['title']
 
-            # 카테고리 업데이트 (브레드크럼에서 추출한 전체 경로)
+            # 카테고리 업데이트
             if detail_info.get('category'):
                 product.extra_info['category'] = detail_info['category']
 
             # 썸네일 이미지 처리: 첫 번째는 image_url, 나머지는 extra_images
             thumbnails = detail_info.get('thumbnail_images', [])
             if thumbnails:
-                product.image_url = thumbnails[0]  # 첫 번째 이미지를 대표 이미지로
+                product.image_url = thumbnails[0]
                 if len(thumbnails) > 1:
-                    product.extra_info['extra_images'] = thumbnails[1:]  # 나머지는 추가 이미지
+                    product.extra_info['extra_images'] = thumbnails[1:]
 
             # 상세 설명 이미지
             product.extra_info['detail_images'] = detail_info.get('detail_images', [])
-            product.extra_info['attributes'] = detail_info.get('attributes', {})
+
+            # 상품정보 제공 고시 (제조국 등)
+            product.extra_info['product_info'] = product_info_table
 
             thumb_count = len(thumbnails)
             extra_count = len(thumbnails) - 1 if thumbnails else 0
             detail_img_count = len(detail_info.get('detail_images', []))
-            self.log(f"  상품 {pd_no}: 썸네일 {thumb_count}개 (대표1+추가{extra_count}), 상세 이미지 {detail_img_count}개")
+            info_count = len(product_info_table)
+            self.log(f"  상품 {pd_no}: 썸네일 {thumb_count}개, 상세이미지 {detail_img_count}개, 상품정보 {info_count}개")
 
         except Exception as e:
             self.log(f"  ⚠️ 상품 상세 수집 실패 [{pd_no}]: {e}")
