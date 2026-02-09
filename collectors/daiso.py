@@ -401,6 +401,11 @@ class DaisoCollector(BaseCollector):
             # 상품정보 제공 고시 (제조국 등)
             product.extra_info['product_info'] = product_info_table
 
+            # description 문자열 생성 (엑셀 출력용)
+            if product_info_table:
+                desc_lines = [f"{k}: {v}" for k, v in product_info_table.items()]
+                product.extra_info['description'] = "\n".join(desc_lines)
+
             thumb_count = len(thumbnails)
             extra_count = len(thumbnails) - 1 if thumbnails else 0
             detail_img_count = len(detail_info.get('detail_images', []))
