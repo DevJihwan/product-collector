@@ -584,3 +584,9 @@ class DaisoCollector(BaseCollector):
             ))
 
         return options
+
+
+def is_daiso_url(url: str) -> bool:
+    """다이소몰 URL인지 확인"""
+    parsed = urlparse(url)
+    return 'daisomall.co.kr' in parsed.netloc

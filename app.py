@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import OUTPUT_DIR, LOGS_DIR
 from collectors.musinsa import MusinsaCollector, is_musinsa_url
 from collectors.naver import NaverSmartStoreCollector, is_naver_store_url
+from collectors.daiso import DaisoCollector, is_daiso_url
 from exporters.excel import JoomExcelExporter
 
 # 테마 설정
@@ -362,7 +363,7 @@ class CollectorApp(ctk.CTk):
             self.product_count_label.configure(text="카테고리 URL을 입력해주세요.", text_color="orange")
             return
 
-        if not is_musinsa_url(url) and not is_naver_store_url(url):
+        if not is_musinsa_url(url) and not is_naver_store_url(url) and not is_daiso_url(url):
             self.product_count_label.configure(text="지원하지 않는 URL입니다.", text_color="red")
             return
 
@@ -507,6 +508,42 @@ class CollectorApp(ctk.CTk):
                         await browser.close()
                         return {'error': str(e)}
 
+            elif is_daiso_url(url):
+                # 다이소: API로 상품 수 조회
+                import aiohttp
+                from config import DaisoConfig
+
+                # URL에서 카테고리 정보 추출
+                parsed = urlparse(url)
+                path_parts = parsed.path.strip('/').split('/')
+                # /ds/exhCtgr/C208/{대분류}/{중분류}
+                if len(path_parts) >= 5:
+                    large_ctgr = path_parts[3]
+                    ctgr_no = path_parts[4]
+                else:
+                    return {'error': '카테고리 URL 형식이 올바르지 않습니다.'}
+
+                api_url = f"{DaisoConfig.SEARCH_API}?pageNum=1&cntPerPage=1&largeExhCtgrNo={large_ctgr}&exhCtgrNo={ctgr_no}"
+
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                result_set = data.get('resultSet', {})
+                                result_list = result_set.get('result', [])
+                                if len(result_list) >= 2:
+                                    total_count = result_list[1].get('totalSize', 0)
+                                    total_pages = (total_count + 29) // 30  # 30개씩 페이지
+                                    return {
+                                        'total_count': total_count,
+                                        'total_pages': total_pages,
+                                        'site': '다이소'
+                                    }
+                            return {'error': 'API 응답 오류'}
+                except Exception as e:
+                    return {'error': str(e)}
+
         except Exception as e:
             return {'error': str(e)}
 
@@ -587,8 +624,8 @@ class CollectorApp(ctk.CTk):
             messagebox.showerror("오류", "유효하지 않은 URL입니다.")
             return False
 
-        if not is_musinsa_url(url) and not is_naver_store_url(url):
-            messagebox.showerror("오류", "지원하지 않는 사이트입니다.\n무신사 또는 네이버 스마트스토어 URL을 입력해주세요.")
+        if not is_musinsa_url(url) and not is_naver_store_url(url) and not is_daiso_url(url):
+            messagebox.showerror("오류", "지원하지 않는 사이트입니다.\n무신사, 네이버 스마트스토어 또는 다이소몰 URL을 입력해주세요.")
             return False
 
         # 카테고리 URL 검증
@@ -600,6 +637,11 @@ class CollectorApp(ctk.CTk):
         elif is_naver_store_url(url):
             # 네이버: 상품 페이지 URL만 차단
             if '/products/' in url:
+                messagebox.showerror("오류", "상품 페이지 URL입니다.\n카테고리 URL을 입력해주세요.")
+                return False
+        elif is_daiso_url(url):
+            # 다이소: 상품 페이지 URL 차단
+            if 'pdNo=' in url or '/pdr/' in url:
                 messagebox.showerror("오류", "상품 페이지 URL입니다.\n카테고리 URL을 입력해주세요.")
                 return False
 
@@ -679,10 +721,16 @@ class CollectorApp(ctk.CTk):
         # 사이트 유형 감지
         if is_musinsa_url(url):
             site_type = "musinsa"
+            site_name = "무신사"
             self.collector = MusinsaCollector(headless=headless)
-        else:
+        elif is_naver_store_url(url):
             site_type = "naver"
+            site_name = "네이버 스마트스토어"
             self.collector = NaverSmartStoreCollector(headless=headless)
+        else:
+            site_type = "daiso"
+            site_name = "다이소몰"
+            self.collector = DaisoCollector(headless=headless)
 
         # 로그 콜백 설정 (GUI 로그에 표시)
         self.collector.log_callback = self._log
@@ -692,7 +740,7 @@ class CollectorApp(ctk.CTk):
         self._log("=" * 50)
         self._log("수집 시작")
         self._log("=" * 50)
-        self._log(f"사이트: {'무신사' if site_type == 'musinsa' else '네이버 스마트스토어'}")
+        self._log(f"사이트: {site_name}")
         self._log(f"URL: {url}")
         if range_start is None and range_end is None:
             self._log(f"수집 범위: 전체")
