@@ -406,6 +406,14 @@ class DaisoCollector(BaseCollector):
                 desc_lines = [f"{k}: {v}" for k, v in product_info_table.items()]
                 product.extra_info['description'] = "\n".join(desc_lines)
 
+            # 4단계: 옵션 존재 여부 확인 (.product-option-button)
+            option_count = await self.page.evaluate("""
+                () => document.querySelectorAll('.product-option-button').length
+            """)
+            product.extra_info['has_option'] = option_count > 0
+            if option_count > 0:
+                self.log(f"    → 옵션 {option_count}개 발견")
+
             thumb_count = len(thumbnails)
             extra_count = len(thumbnails) - 1 if thumbnails else 0
             detail_img_count = len(detail_info.get('detail_images', []))
@@ -418,7 +426,7 @@ class DaisoCollector(BaseCollector):
         return product
 
     async def collect_options(self, product: ProductInfo) -> List[ProductOption]:
-        """상품 옵션 수집"""
+        """상품 옵션 수집 (옵션별 이미지 포함)"""
         options = []
 
         # 옵션 상품이 아니면 기본 옵션 반환
@@ -429,65 +437,106 @@ class DaisoCollector(BaseCollector):
                 additional_price=0,
                 stock=100,
                 sold_out=product.extra_info.get('sold_out', False),
-                option_data={"옵션": "기본"}
+                option_data={"옵션": "기본"},
+                image_url=product.image_url
             ))
             return options
 
         try:
-            # DOM에서 옵션 추출
-            option_data = await self.page.evaluate("""
+            # 상세 페이지가 아니면 이동
+            current_url = self.page.url
+            if product.product_id not in current_url:
+                await self.page.goto(product.url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
+                await asyncio.sleep(2)
+
+            # 1. 옵션 버튼 정보 먼저 수집
+            option_buttons = await self.page.evaluate("""
                 () => {
                     const options = [];
+                    const buttons = document.querySelectorAll('.product-option-button');
 
-                    // 옵션 select 박스
-                    const selects = document.querySelectorAll('select[class*="option"], select[name*="option"]');
-                    selects.forEach(select => {
-                        const opts = select.querySelectorAll('option');
-                        opts.forEach(opt => {
-                            const text = opt.textContent.trim();
-                            const value = opt.value;
-                            if (text && value && text !== '선택하세요' && text !== '옵션선택') {
-                                options.push({
-                                    name: text,
-                                    value: value,
-                                    disabled: opt.disabled,
-                                    soldOut: text.includes('품절') || opt.disabled
-                                });
+                    buttons.forEach((btn, idx) => {
+                        const textSpan = btn.querySelector('.product-option-button__text');
+                        const priceSpan = btn.querySelector('.product-option-button__price');
+                        const isSoldOut = btn.classList.contains('is-soldout') || btn.disabled;
+
+                        let additionalPrice = 0;
+                        if (priceSpan) {
+                            const priceText = priceSpan.textContent.replace(/[^0-9+-]/g, '');
+                            if (priceText.includes('+')) {
+                                additionalPrice = parseInt(priceText.replace('+', '')) || 0;
+                            } else if (priceText.includes('-')) {
+                                additionalPrice = -parseInt(priceText.replace('-', '')) || 0;
                             }
-                        });
-                    });
-
-                    // 옵션 버튼 형태
-                    const optionBtns = document.querySelectorAll('[class*="option"] button, [class*="option"] li');
-                    optionBtns.forEach(btn => {
-                        const text = btn.textContent.trim();
-                        if (text && text.length < 50) {
-                            const isSoldOut = btn.classList.contains('sold-out') ||
-                                             btn.classList.contains('disabled') ||
-                                             btn.disabled ||
-                                             text.includes('품절');
-                            options.push({
-                                name: text,
-                                value: text,
-                                disabled: isSoldOut,
-                                soldOut: isSoldOut
-                            });
                         }
+
+                        options.push({
+                            idx: idx,
+                            name: textSpan ? textSpan.textContent.trim() : btn.textContent.trim(),
+                            soldOut: isSoldOut,
+                            additionalPrice: additionalPrice
+                        });
                     });
 
                     return options;
                 }
             """)
 
+            # 2. 각 옵션 클릭하며 이미지 수집
+            option_data = []
+            for opt_info in option_buttons:
+                idx = opt_info['idx']
+
+                # 옵션 버튼 클릭
+                await self.page.evaluate(f"""
+                    () => {{
+                        const buttons = document.querySelectorAll('.product-option-button');
+                        if (buttons[{idx}]) buttons[{idx}].click();
+                    }}
+                """)
+                await asyncio.sleep(0.5)
+
+                # 이미지 수집
+                images = await self.page.evaluate("""
+                    () => {
+                        const images = [];
+                        const swiperImgs = document.querySelectorAll('.goods-swiper-wrap .swiper-slide:not(.swiper-slide-duplicate) img');
+                        swiperImgs.forEach(img => {
+                            let src = img.src;
+                            if (src.includes('/dims/')) src = src.split('/dims/')[0];
+                            if (src && src.includes('/file/PD/') && !images.includes(src)) {
+                                images.push(src);
+                            }
+                        });
+                        return images;
+                    }
+                """)
+
+                option_data.append({
+                    **opt_info,
+                    'images': images
+                })
+
             for opt in option_data:
+                option_images = opt.get('images', [])
+                main_image = option_images[0] if option_images else product.image_url
+                extra_images = option_images[1:] if len(option_images) > 1 else []
+
                 options.append(ProductOption(
                     color="",
                     size=opt.get('name', ''),
-                    additional_price=0,
+                    additional_price=opt.get('additionalPrice', 0),
                     stock=0 if opt.get('soldOut', False) else 100,
                     sold_out=opt.get('soldOut', False),
-                    option_data={"옵션": opt.get('name', '')}
+                    option_data={
+                        "옵션": opt.get('name', ''),
+                        "option_extra_images": ",".join(extra_images) if extra_images else ""
+                    },
+                    image_url=main_image
                 ))
+
+            if options:
+                self.log(f"    → 옵션 {len(options)}개 수집 완료")
 
             if not options:
                 # 옵션이 없으면 기본 옵션
@@ -497,7 +546,8 @@ class DaisoCollector(BaseCollector):
                     additional_price=0,
                     stock=100,
                     sold_out=product.extra_info.get('sold_out', False),
-                    option_data={"옵션": "기본"}
+                    option_data={"옵션": "기본"},
+                    image_url=product.image_url
                 ))
 
         except Exception as e:
@@ -508,7 +558,8 @@ class DaisoCollector(BaseCollector):
                 additional_price=0,
                 stock=100,
                 sold_out=False,
-                option_data={"옵션": "기본"}
+                option_data={"옵션": "기본"},
+                image_url=product.image_url
             ))
 
         return options

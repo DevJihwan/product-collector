@@ -269,6 +269,15 @@ class JoomExcelExporter:
                 'Stock': 0 if sold_out else stock,
                 'SoldOut': 'Y' if sold_out else 'N',
             })
+
+            # 옵션별 이미지 URL (다이소 등 옵션마다 이미지가 다른 경우)
+            option_image = ''
+            if hasattr(option, 'image_url'):
+                option_image = option.image_url
+            else:
+                option_image = option.get('image_url', '')
+            if option_image:
+                data['Image_URL'] = option_image
         else:
             # 옵션 없는 경우
             data.update({

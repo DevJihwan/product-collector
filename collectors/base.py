@@ -29,6 +29,8 @@ class ProductOption:
     sold_out: bool = False
     # 원본 옵션 데이터 (이름:값 쌍, 순서 보존)
     option_data: Dict[str, str] = field(default_factory=dict)
+    # 옵션별 이미지 URL (다이소 등 옵션마다 이미지가 다른 경우)
+    image_url: str = ""
 
 
 @dataclass
