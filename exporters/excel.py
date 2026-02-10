@@ -278,6 +278,15 @@ class JoomExcelExporter:
                 option_image = option.get('image_url', '')
             if option_image:
                 data['Image_URL'] = option_image
+
+            # 옵션별 추가 이미지 (갤러리)
+            option_extra_images = []
+            if hasattr(option, 'extra_images'):
+                option_extra_images = option.extra_images
+            else:
+                option_extra_images = option.get('extra_images', [])
+            if option_extra_images:
+                data['Extra_Images'] = ', '.join(option_extra_images)
         else:
             # 옵션 없는 경우
             data.update({

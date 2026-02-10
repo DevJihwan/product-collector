@@ -528,11 +528,9 @@ class DaisoCollector(BaseCollector):
                     additional_price=opt.get('additionalPrice', 0),
                     stock=0 if opt.get('soldOut', False) else 100,
                     sold_out=opt.get('soldOut', False),
-                    option_data={
-                        "옵션": opt.get('name', ''),
-                        "option_extra_images": ",".join(extra_images) if extra_images else ""
-                    },
-                    image_url=main_image
+                    option_data={"옵션": opt.get('name', '')},
+                    image_url=main_image,
+                    extra_images=extra_images
                 ))
 
             if options:

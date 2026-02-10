@@ -31,6 +31,8 @@ class ProductOption:
     option_data: Dict[str, str] = field(default_factory=dict)
     # 옵션별 이미지 URL (다이소 등 옵션마다 이미지가 다른 경우)
     image_url: str = ""
+    # 옵션별 추가 이미지 (갤러리)
+    extra_images: List[str] = field(default_factory=list)
 
 
 @dataclass
