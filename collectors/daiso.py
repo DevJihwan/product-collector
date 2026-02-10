@@ -496,7 +496,7 @@ class DaisoCollector(BaseCollector):
                 """)
                 await asyncio.sleep(0.5)
 
-                # 이미지 수집
+                # 썸네일/갤러리 이미지 수집
                 images = await self.page.evaluate("""
                     () => {
                         const images = [];
@@ -512,15 +512,37 @@ class DaisoCollector(BaseCollector):
                     }
                 """)
 
+                # 상세 설명 이미지 수집
+                detail_images = await self.page.evaluate("""
+                    () => {
+                        const images = [];
+                        const detailSelectors = ['.editor-content img', '.editor-area img', '.product-detail img', '.detail-content img'];
+                        for (const sel of detailSelectors) {
+                            const imgs = document.querySelectorAll(sel);
+                            imgs.forEach(img => {
+                                let src = img.src || img.getAttribute('data-src') || '';
+                                if (src.includes('/dims/')) src = src.split('/dims/')[0];
+                                if (src && src.includes('/file/') && !images.includes(src)) {
+                                    images.push(src);
+                                }
+                            });
+                            if (images.length > 0) break;
+                        }
+                        return images;
+                    }
+                """)
+
                 option_data.append({
                     **opt_info,
-                    'images': images
+                    'images': images,
+                    'detail_images': detail_images
                 })
 
             for opt in option_data:
                 option_images = opt.get('images', [])
                 main_image = option_images[0] if option_images else product.image_url
                 extra_images = option_images[1:] if len(option_images) > 1 else []
+                detail_images = opt.get('detail_images', [])
 
                 options.append(ProductOption(
                     color="",
@@ -530,7 +552,8 @@ class DaisoCollector(BaseCollector):
                     sold_out=opt.get('soldOut', False),
                     option_data={"옵션": opt.get('name', '')},
                     image_url=main_image,
-                    extra_images=extra_images
+                    extra_images=extra_images,
+                    detail_images=detail_images
                 ))
 
             if options:

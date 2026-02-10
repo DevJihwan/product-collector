@@ -287,6 +287,15 @@ class JoomExcelExporter:
                 option_extra_images = option.get('extra_images', [])
             if option_extra_images:
                 data['Extra_Images'] = ', '.join(option_extra_images)
+
+            # 옵션별 상세 이미지
+            option_detail_images = []
+            if hasattr(option, 'detail_images'):
+                option_detail_images = option.detail_images
+            else:
+                option_detail_images = option.get('detail_images', [])
+            if option_detail_images:
+                data['Detail_Images'] = ', '.join(option_detail_images)
         else:
             # 옵션 없는 경우
             data.update({

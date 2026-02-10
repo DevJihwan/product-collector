@@ -33,6 +33,8 @@ class ProductOption:
     image_url: str = ""
     # 옵션별 추가 이미지 (갤러리)
     extra_images: List[str] = field(default_factory=list)
+    # 옵션별 상세 이미지
+    detail_images: List[str] = field(default_factory=list)
 
 
 @dataclass
