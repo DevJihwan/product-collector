@@ -423,6 +423,67 @@ class MusinsaCollector(BaseCollector):
         except Exception as e:
             self.logger.debug(f"상세 이미지 수집 실패 [{goods_no}]: {e}")
 
+        # 5-1. 폴백: DOM에서 못 찾으면 JavaScript 전역 객체에서 이미지 추출
+        if not product.extra_info.get('detail_images'):
+            try:
+                fallback_images = await self.page.evaluate("""
+                    () => {
+                        // window.__MSS__ 또는 window.__MSS_FE__에서 goodsContents 추출
+                        let htmlContent = null;
+
+                        if (window.__MSS__?.product?.state?.goodsContents) {
+                            htmlContent = window.__MSS__.product.state.goodsContents;
+                        } else if (window.__MSS_FE__?.product?.state?.goodsContents) {
+                            htmlContent = window.__MSS_FE__.product.state.goodsContents;
+                        } else {
+                            const nextData = document.getElementById('__NEXT_DATA__');
+                            if (nextData) {
+                                try {
+                                    const data = JSON.parse(nextData.textContent);
+                                    const pageProps = data?.props?.pageProps;
+                                    if (pageProps?.goodsContents) {
+                                        htmlContent = pageProps.goodsContents;
+                                    } else if (pageProps?.dehydratedState?.queries) {
+                                        for (const query of pageProps.dehydratedState.queries) {
+                                            if (query?.state?.data?.data?.goodsContents) {
+                                                htmlContent = query.state.data.data.goodsContents;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+
+                        if (!htmlContent) return [];
+
+                        // HTML에서 이미지 URL 추출
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(htmlContent, 'text/html');
+                        const imgs = doc.querySelectorAll('img');
+                        const result = [];
+
+                        imgs.forEach(img => {
+                            let url = img.getAttribute('src') || '';
+                            if (url.startsWith('//')) {
+                                url = 'https:' + url;
+                            }
+                            // thumbnails 경로 제거
+                            url = url.replace('/thumbnails/images/', '/images/');
+                            if (url && url.startsWith('http')) {
+                                result.push(url);
+                            }
+                        });
+
+                        return result;
+                    }
+                """)
+                if fallback_images:
+                    product.extra_info['detail_images'] = fallback_images
+                    self.logger.debug(f"상세 이미지 수집 (폴백): {len(fallback_images)}개")
+            except Exception as e:
+                self.logger.debug(f"상세 이미지 폴백 수집 실패 [{goods_no}]: {e}")
+
         # 6. 상세 설명 텍스트 수집 (DOM에서 추출)
         try:
             description_text = await self.page.evaluate("""
@@ -456,6 +517,60 @@ class MusinsaCollector(BaseCollector):
                 self.logger.debug(f"상세 설명 텍스트 수집: {len(description_text)}자")
         except Exception as e:
             self.logger.debug(f"상세 설명 텍스트 수집 실패 [{goods_no}]: {e}")
+
+        # 6-1. 폴백: DOM에서 못 찾으면 JavaScript 전역 객체에서 추출
+        if not product.extra_info.get('description'):
+            try:
+                fallback_description = await self.page.evaluate("""
+                    () => {
+                        // window.__MSS__ 또는 window.__MSS_FE__에서 goodsContents 추출
+                        let htmlContent = null;
+
+                        // 방법 1: __MSS__.product.state.goodsContents
+                        if (window.__MSS__?.product?.state?.goodsContents) {
+                            htmlContent = window.__MSS__.product.state.goodsContents;
+                        }
+                        // 방법 2: __MSS_FE__.product.state.goodsContents
+                        else if (window.__MSS_FE__?.product?.state?.goodsContents) {
+                            htmlContent = window.__MSS_FE__.product.state.goodsContents;
+                        }
+                        // 방법 3: __NEXT_DATA__에서 추출
+                        else {
+                            const nextData = document.getElementById('__NEXT_DATA__');
+                            if (nextData) {
+                                try {
+                                    const data = JSON.parse(nextData.textContent);
+                                    const pageProps = data?.props?.pageProps;
+                                    if (pageProps?.goodsContents) {
+                                        htmlContent = pageProps.goodsContents;
+                                    } else if (pageProps?.dehydratedState?.queries) {
+                                        // React Query 캐시에서 찾기
+                                        for (const query of pageProps.dehydratedState.queries) {
+                                            if (query?.state?.data?.data?.goodsContents) {
+                                                htmlContent = query.state.data.data.goodsContents;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+
+                        if (!htmlContent) return '';
+
+                        // HTML을 텍스트로 변환
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(htmlContent, 'text/html');
+                        let text = doc.body.innerText || '';
+                        text = text.replace(/\\n\\s*\\n/g, '\\n').trim();
+                        return text;
+                    }
+                """)
+                if fallback_description:
+                    product.extra_info['description'] = fallback_description
+                    self.logger.debug(f"상세 설명 텍스트 수집 (폴백): {len(fallback_description)}자")
+            except Exception as e:
+                self.logger.debug(f"상세 설명 폴백 수집 실패 [{goods_no}]: {e}")
 
         return product
 
