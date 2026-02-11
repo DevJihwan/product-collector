@@ -523,28 +523,31 @@ class MusinsaCollector(BaseCollector):
             try:
                 fallback_description = await self.page.evaluate("""
                     () => {
-                        // window.__MSS__ 또는 window.__MSS_FE__에서 goodsContents 추출
-                        let htmlContent = null;
+                        const state = window.__MSS__?.product?.state
+                                   || window.__MSS_FE__?.product?.state
+                                   || {};
 
-                        // 방법 1: __MSS__.product.state.goodsContents
-                        if (window.__MSS__?.product?.state?.goodsContents) {
-                            htmlContent = window.__MSS__.product.state.goodsContents;
+                        // 방법 1: specDesc (상세 스펙 설명 - 텍스트)
+                        if (state.specDesc) {
+                            return state.specDesc.trim();
                         }
-                        // 방법 2: __MSS_FE__.product.state.goodsContents
-                        else if (window.__MSS_FE__?.product?.state?.goodsContents) {
-                            htmlContent = window.__MSS_FE__.product.state.goodsContents;
+
+                        // 방법 2: mdOpinion (MD 의견)
+                        if (state.mdOpinion) {
+                            return state.mdOpinion.trim();
                         }
-                        // 방법 3: __NEXT_DATA__에서 추출
-                        else {
+
+                        // 방법 3: goodsContents (HTML → 텍스트 변환)
+                        let htmlContent = state.goodsContents;
+                        if (!htmlContent) {
+                            // __NEXT_DATA__에서 추출 시도
                             const nextData = document.getElementById('__NEXT_DATA__');
                             if (nextData) {
                                 try {
                                     const data = JSON.parse(nextData.textContent);
                                     const pageProps = data?.props?.pageProps;
-                                    if (pageProps?.goodsContents) {
-                                        htmlContent = pageProps.goodsContents;
-                                    } else if (pageProps?.dehydratedState?.queries) {
-                                        // React Query 캐시에서 찾기
+                                    htmlContent = pageProps?.goodsContents;
+                                    if (!htmlContent && pageProps?.dehydratedState?.queries) {
                                         for (const query of pageProps.dehydratedState.queries) {
                                             if (query?.state?.data?.data?.goodsContents) {
                                                 htmlContent = query.state.data.data.goodsContents;
@@ -556,14 +559,16 @@ class MusinsaCollector(BaseCollector):
                             }
                         }
 
-                        if (!htmlContent) return '';
+                        if (htmlContent) {
+                            // HTML을 텍스트로 변환
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(htmlContent, 'text/html');
+                            let text = doc.body.innerText || '';
+                            text = text.replace(/\\n\\s*\\n/g, '\\n').trim();
+                            if (text) return text;
+                        }
 
-                        // HTML을 텍스트로 변환
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(htmlContent, 'text/html');
-                        let text = doc.body.innerText || '';
-                        text = text.replace(/\\n\\s*\\n/g, '\\n').trim();
-                        return text;
+                        return '';
                     }
                 """)
                 if fallback_description:
