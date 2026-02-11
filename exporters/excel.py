@@ -269,6 +269,33 @@ class JoomExcelExporter:
                 'Stock': 0 if sold_out else stock,
                 'SoldOut': 'Y' if sold_out else 'N',
             })
+
+            # 옵션별 이미지 URL (다이소 등 옵션마다 이미지가 다른 경우)
+            option_image = ''
+            if hasattr(option, 'image_url'):
+                option_image = option.image_url
+            else:
+                option_image = option.get('image_url', '')
+            if option_image:
+                data['Image_URL'] = option_image
+
+            # 옵션별 추가 이미지 (갤러리)
+            option_extra_images = []
+            if hasattr(option, 'extra_images'):
+                option_extra_images = option.extra_images
+            else:
+                option_extra_images = option.get('extra_images', [])
+            if option_extra_images:
+                data['Extra_Images'] = ', '.join(option_extra_images)
+
+            # 옵션별 상세 이미지
+            option_detail_images = []
+            if hasattr(option, 'detail_images'):
+                option_detail_images = option.detail_images
+            else:
+                option_detail_images = option.get('detail_images', [])
+            if option_detail_images:
+                data['Detail_Images'] = ', '.join(option_detail_images)
         else:
             # 옵션 없는 경우
             data.update({

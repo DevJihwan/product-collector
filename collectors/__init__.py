@@ -4,3 +4,4 @@
 from .base import BaseCollector
 from .musinsa import MusinsaCollector
 from .naver import NaverSmartStoreCollector
+from .daiso import DaisoCollector
