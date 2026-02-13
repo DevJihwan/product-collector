@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-무신사/네이버 스마트스토어 상품 데이터 수집 프로그램 - GUI 버전
+무신사/네이버/다이소 상품 데이터 수집 프로그램 - GUI 버전
 """
 
 # ⚠️ 중요: 다른 모듈 import 전에 환경 변수 설정 (PyInstaller 호환)
@@ -65,7 +65,7 @@ class CollectorApp(ctk.CTk):
         super().__init__()
 
         # 윈도우 설정
-        self.title("상품 데이터 수집 프로그램 v1.0")
+        self.title("상품 데이터 수집 프로그램 v1.1")
         self.geometry("900x700")
         self.minsize(800, 600)
 
@@ -109,7 +109,7 @@ class CollectorApp(ctk.CTk):
         # 제목
         title_label = ctk.CTkLabel(
             input_frame,
-            text="무신사 / 네이버 스마트스토어 상품 데이터 수집",
+            text="무신사 / 네이버 / 다이소 상품 데이터 수집",
             font=ctk.CTkFont(size=20, weight="bold")
         )
         title_label.pack(pady=15)
@@ -344,9 +344,14 @@ class CollectorApp(ctk.CTk):
             # 네이버: 상품 페이지 URL만 경고
             if '/products/' in url:
                 warning_text = "⚠️ 상품 페이지 URL입니다. 카테고리 URL을 입력해주세요."
+        elif is_daiso_url(url):
+            self.site_label.configure(text="[다이소]", text_color="purple")
+            # 다이소: 상품 페이지 URL만 경고
+            if '/pdr/' in url or 'pdNo=' in url:
+                warning_text = "⚠️ 상품 페이지 URL입니다. 카테고리 URL을 입력해주세요."
         else:
             self.site_label.configure(text="[미지원]", text_color="red")
-            warning_text = "⚠️ 무신사 또는 네이버 스마트스토어 URL만 지원합니다."
+            warning_text = "⚠️ 무신사, 네이버 스마트스토어, 다이소몰 URL만 지원합니다."
 
         self.url_warning_label.configure(text=warning_text)
         # 상품 수 정보 초기화
