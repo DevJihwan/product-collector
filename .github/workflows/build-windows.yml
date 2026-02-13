@@ -13,6 +13,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Get build date
+        id: date
+        run: |
+          $date = Get-Date -Format "yyyyMMdd"
+          $datetime = Get-Date -Format "yyyyMMdd_HHmmss"
+          echo "date=$date" >> $env:GITHUB_OUTPUT
+          echo "datetime=$datetime" >> $env:GITHUB_OUTPUT
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -46,11 +54,12 @@ jobs:
         run: |
           # install_browser.bat 복사
           Copy-Item "install_browser.bat" "dist\install_browser.bat"
-          # README 생성
+          # README 생성 (빌드 날짜 포함)
           @"
           ==========================================
             ProductCollector 설치 안내
           ==========================================
+          빌드 날짜: ${{ steps.date.outputs.datetime }}
 
           1. Python 3.11 설치 (https://www.python.org/downloads/)
              - 설치 시 "Add Python to PATH" 반드시 체크!
@@ -67,7 +76,7 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: ProductCollector-Windows
+          name: ProductCollector-Windows-${{ steps.date.outputs.date }}
           path: |
             dist/ProductCollector.exe
             dist/install_browser.bat
