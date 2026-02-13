@@ -22,6 +22,7 @@ if getattr(sys, 'frozen', False):
 import asyncio
 import threading
 import queue
+import json
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -881,34 +882,139 @@ class CollectorApp(ctk.CTk):
             else:
                 output_path = None
 
-            exporter = JoomExcelExporter(site_type)
-            excel_path = exporter.export(products_data, output_path, category_url=url)
+            excel_path = None
+            json_path = None
+            exporter = None
+            skipped_in_export = []
+
+            try:
+                exporter = JoomExcelExporter(site_type)
+                excel_path = exporter.export(products_data, output_path, category_url=url)
+                # 엑셀 내보내기 중 스킵된 상품 확인
+                skipped_in_export = exporter.skipped_products or []
+            except Exception as e:
+                self._log(f"❌ 엑셀 파일 생성 실패: {e}")
+                # JSON으로 백업 저장
+                try:
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    json_path = OUTPUT_DIR / f"{site_type}_products_{timestamp}_backup.json"
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'products': products_data,
+                            'category_url': url,
+                            'saved_at': datetime.now().isoformat(),
+                            'total_products': len(products_data),
+                            'error': str(e)
+                        }, f, ensure_ascii=False, indent=2)
+                    self._log(f"💾 JSON 백업 저장 완료: {json_path}")
+                except Exception as json_e:
+                    self._log(f"❌ JSON 백업도 실패: {json_e}")
 
             # 총 옵션 수 및 행 수 계산
             total_options = sum(len(p.get('options', [])) for p in products_data)
             total_rows = sum(max(1, len(p.get('options', []))) for p in products_data)
 
             # 결과 요약
+            collection_failed_count = len(self.collector.state.failed_products)
+            export_skipped_count = len(skipped_in_export)
+            total_failed_count = collection_failed_count + export_skipped_count
+
             self._log("=" * 50)
-            self._log("✅ 수집 완료!")
+            if excel_path:
+                self._log("✅ 수집 완료!")
+            else:
+                self._log("⚠️ 수집 완료 (엑셀 저장 실패, JSON 백업 참조)")
             self._log("=" * 50)
             self._log(f"  📦 수집 상품: {len(self.collector.state.collected_products)}개")
             self._log(f"  🎨 총 옵션: {total_options}개")
             self._log(f"  📊 엑셀 행: {total_rows}행 (옵션별 1행)")
-            self._log(f"  ❌ 실패: {len(self.collector.state.failed_products)}개")
+            if total_failed_count > 0:
+                fail_detail = f"(수집: {collection_failed_count}, 저장: {export_skipped_count})" if export_skipped_count > 0 else ""
+                self._log(f"  ❌ 실패: {total_failed_count}개 {fail_detail}")
+            else:
+                self._log(f"  ✅ 실패: 0개")
             self._log("-" * 50)
-            self._log(f"  📁 저장 위치: {excel_path}")
+            if excel_path:
+                self._log(f"  📁 저장 위치: {excel_path}")
+            if json_path:
+                self._log(f"  📁 JSON 백업: {json_path}")
             self._log("=" * 50)
 
+            # 실패한 상품 목록 출력 및 저장
+            # 수집 실패 + 엑셀 저장 실패 합산
+            collection_failed = self.collector.state.failed_products
+            all_failed_products = []
+
+            # 수집 실패 상품
+            for failed in collection_failed:
+                all_failed_products.append({
+                    'product_id': failed.get('product_id', 'unknown'),
+                    'error': failed.get('error', 'unknown'),
+                    'stage': '수집'
+                })
+
+            # 엑셀 저장 실패 상품
+            for skipped in skipped_in_export:
+                all_failed_products.append({
+                    'product_id': skipped.get('product_id', 'unknown'),
+                    'error': skipped.get('error', 'unknown'),
+                    'stage': '저장'
+                })
+
+            failed_file_path = None
+            if all_failed_products:
+                self._log("")
+                self._log("❌ 실패한 상품 목록:")
+                self._log("-" * 50)
+                for i, failed in enumerate(all_failed_products, 1):
+                    product_id = failed.get('product_id', 'unknown')
+                    stage = failed.get('stage', '')
+                    error_msg = failed.get('error', 'unknown error')
+                    # 에러 메시지가 길면 잘라서 표시
+                    if len(error_msg) > 70:
+                        error_msg = error_msg[:67] + "..."
+                    self._log(f"  {i}. [{stage}] ID: {product_id} - {error_msg}")
+                self._log("-" * 50)
+
+                # 실패 목록 파일로 저장
+                try:
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    failed_file_path = OUTPUT_DIR / f"{site_type}_failed_products_{timestamp}.json"
+                    with open(failed_file_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'failed_products': all_failed_products,
+                            'collection_failed': len(collection_failed),
+                            'export_skipped': len(skipped_in_export),
+                            'total_failed': len(all_failed_products),
+                            'saved_at': datetime.now().isoformat(),
+                            'category_url': url
+                        }, f, ensure_ascii=False, indent=2)
+                    self._log(f"📁 실패 목록 저장: {failed_file_path}")
+                except Exception as e:
+                    self._log(f"⚠️ 실패 목록 저장 오류: {e}")
+
             # 완료 메시지
-            self.after(0, lambda: messagebox.showinfo(
-                "완료",
-                f"수집이 완료되었습니다!\n\n"
-                f"수집 상품: {len(self.collector.state.collected_products)}개\n"
-                f"총 옵션: {total_options}개\n"
-                f"엑셀 행: {total_rows}행\n\n"
-                f"저장 위치:\n{excel_path}"
-            ))
+            failed_count = len(all_failed_products)
+            failed_info = f"\n실패: {failed_count}개" if failed_count > 0 else ""
+            failed_file_info = f"\n\n실패 목록: {failed_file_path.name}" if failed_file_path else ""
+
+            if excel_path:
+                self.after(0, lambda: messagebox.showinfo(
+                    "완료",
+                    f"수집이 완료되었습니다!\n\n"
+                    f"수집 상품: {len(self.collector.state.collected_products)}개\n"
+                    f"총 옵션: {total_options}개\n"
+                    f"엑셀 행: {total_rows}행{failed_info}\n\n"
+                    f"저장 위치:\n{excel_path}{failed_file_info}"
+                ))
+            else:
+                save_info = f"JSON 백업: {json_path}" if json_path else "저장 실패"
+                self.after(0, lambda: messagebox.showwarning(
+                    "완료 (저장 오류)",
+                    f"수집은 완료되었으나 엑셀 저장에 실패했습니다.\n\n"
+                    f"수집 상품: {len(self.collector.state.collected_products)}개{failed_info}\n\n"
+                    f"{save_info}{failed_file_info}"
+                ))
 
         finally:
             await self.collector.close_browser()
@@ -926,21 +1032,33 @@ class CollectorApp(ctk.CTk):
 
     def _auto_save(self, site_type: str, count: int, category_url: str = None):
         """중간 자동 저장 (10개 상품마다, 동일 파일 덮어쓰기)"""
+        products_data = self.collector.state.collected_products
+        if not products_data:
+            return
+
+        # 자동 저장 파일명: 동일 파일 덮어쓰기
+        auto_save_path = OUTPUT_DIR / f"{site_type}_autosave_진행중.xlsx"
+
         try:
-            products_data = self.collector.state.collected_products
-            if not products_data:
-                return
-
-            # 자동 저장 파일명: 동일 파일 덮어쓰기
-            auto_save_path = OUTPUT_DIR / f"{site_type}_autosave_진행중.xlsx"
-
             exporter = JoomExcelExporter(site_type)
             exporter.export(products_data, auto_save_path, category_url=category_url)
-
             self._log(f"    💾 자동 저장: {count}개 상품 ({auto_save_path.name})")
 
         except Exception as e:
-            self._log(f"    ⚠️ 자동 저장 실패: {e}")
+            self._log(f"    ⚠️ 엑셀 자동 저장 실패: {e}")
+            # JSON 백업 저장 시도
+            try:
+                json_backup_path = OUTPUT_DIR / f"{site_type}_autosave_backup.json"
+                with open(json_backup_path, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'products': products_data,
+                        'category_url': category_url,
+                        'saved_at': datetime.now().isoformat(),
+                        'count': count
+                    }, f, ensure_ascii=False, indent=2)
+                self._log(f"    💾 JSON 백업 저장: {json_backup_path.name}")
+            except Exception as json_e:
+                self._log(f"    ❌ JSON 백업도 실패: {json_e}")
 
 
 def main():

@@ -30,6 +30,9 @@ class JoomExcelExporter:
         self.logger = get_logger("ExcelExporter")
         self.color_mapper = ColorMapper()
 
+        # 스킵된 상품 목록 (export 후 확인 가능)
+        self.skipped_products = []
+
         # 헤더 스타일
         self.header_font = Font(bold=True, color='FFFFFF')
         self.header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
@@ -145,36 +148,64 @@ class JoomExcelExporter:
         # 2행부터: 데이터
         row = 2
         total_options = 0
+        self.skipped_products = []  # 초기화
 
         for product in products:
-            # ProductInfo 객체 또는 dict 모두 지원
-            if hasattr(product, 'options'):
-                options = product.options
-            else:
-                options = product.get('options', [])
+            try:
+                # ProductInfo 객체 또는 dict 모두 지원
+                if hasattr(product, 'options'):
+                    options = product.options
+                else:
+                    options = product.get('options', [])
 
-            if options:
-                # 옵션이 있는 경우: 옵션 개수만큼 행 생성
-                for opt in options:
-                    row_data = self._create_row_data(product, opt, category_url)
+                if options:
+                    # 옵션이 있는 경우: 옵션 개수만큼 행 생성
+                    for opt in options:
+                        row_data = self._create_row_data(product, opt, category_url)
+                        self._write_row(ws, row, row_data, headers)
+                        row += 1
+                        total_options += 1
+                else:
+                    # 옵션이 없는 경우: 1개 행 생성
+                    row_data = self._create_row_data(product, None, category_url)
                     self._write_row(ws, row, row_data, headers)
                     row += 1
-                    total_options += 1
-            else:
-                # 옵션이 없는 경우: 1개 행 생성
-                row_data = self._create_row_data(product, None, category_url)
-                self._write_row(ws, row, row_data, headers)
-                row += 1
+
+            except Exception as e:
+                # 상품 단위 에러: 해당 상품만 스킵하고 계속 진행
+                product_id = product.get('product_id', 'unknown') if isinstance(product, dict) else getattr(product, 'product_id', 'unknown')
+                error_msg = str(e)
+                self.logger.warning(f"상품 {product_id} 행 생성 실패 (스킵): {error_msg}")
+                self.skipped_products.append({
+                    'product_id': product_id,
+                    'error': error_msg
+                })
+                continue
 
         # 열 너비 조정
         self._adjust_column_widths(ws, headers)
 
         # 저장
-        wb.save(output_path)
+        try:
+            wb.save(output_path)
+        except Exception as e:
+            # 저장 실패 시 다른 파일명으로 재시도
+            self.logger.error(f"엑셀 저장 실패: {e}")
+            backup_path = output_path.parent / f"{output_path.stem}_backup_{datetime.now().strftime('%H%M%S')}.xlsx"
+            try:
+                wb.save(backup_path)
+                self.logger.info(f"백업 파일로 저장: {backup_path}")
+                output_path = backup_path
+            except Exception as e2:
+                self.logger.error(f"백업 저장도 실패: {e2}")
+                raise
 
         self.logger.info(f"엑셀 파일 생성 완료: {output_path}")
         self.logger.info(f"  총 상품: {len(products)}개")
         self.logger.info(f"  총 행 (옵션 확장): {row - 2}개")
+        if self.skipped_products:
+            skipped_ids = [p['product_id'] for p in self.skipped_products[:5]]
+            self.logger.warning(f"  스킵된 상품: {len(self.skipped_products)}개 - {skipped_ids}{'...' if len(self.skipped_products) > 5 else ''}")
 
         return output_path
 
