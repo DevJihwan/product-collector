@@ -353,12 +353,34 @@ class JoomExcelExporter:
         """행 쓰기"""
         for col, header in enumerate(headers, 1):
             value = data.get(header, '')
-            cell = ws.cell(row=row, column=col, value=value)
-            cell.border = self.thin_border
 
-            # 숫자 컬럼 우측 정렬
-            if header in ['Price', 'Sale_Price', 'Additional_Price', 'Total_Price', 'Stock', 'ViewCount', 'SalesCount', 'ReviewCount', 'Rating']:
-                cell.alignment = Alignment(horizontal='right')
+            try:
+                # 문자열 값 안전하게 처리
+                if isinstance(value, str) and value:
+                    # 수식 시작 문자 이스케이프
+                    if value.startswith(('=', '+', '-', '@', '\t', '\r', '\n')):
+                        value = "'" + value
+
+                cell = ws.cell(row=row, column=col)
+                cell.value = value
+                cell.border = self.thin_border
+
+                # 숫자 컬럼 우측 정렬
+                if header in ['Price', 'Sale_Price', 'Additional_Price', 'Total_Price', 'Stock', 'ViewCount', 'SalesCount', 'ReviewCount', 'Rating']:
+                    cell.alignment = Alignment(horizontal='right')
+
+            except Exception as e:
+                # 셀 쓰기 실패 시 문자열로 강제 변환하여 재시도
+                try:
+                    cell = ws.cell(row=row, column=col)
+                    cell.value = str(value) if value else ''
+                    cell.data_type = 's'  # 문자열 타입 강제
+                    cell.border = self.thin_border
+                except Exception:
+                    # 최종 실패 시 빈 값으로 설정
+                    cell = ws.cell(row=row, column=col, value='')
+                    cell.border = self.thin_border
+                    self.logger.warning(f"셀 쓰기 실패 [{row}, {col}]: {e}")
 
     def _adjust_column_widths(self, ws, headers: List[str]):
         """열 너비 조정"""
