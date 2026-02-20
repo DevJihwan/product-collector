@@ -160,8 +160,8 @@ class JoomExcelExporter:
 
                 if options:
                     # 옵션이 있는 경우: 옵션 개수만큼 행 생성
-                    for opt in options:
-                        row_data = self._create_row_data(product, opt, category_url)
+                    for idx, opt in enumerate(options, start=1):
+                        row_data = self._create_row_data(product, opt, category_url, option_idx=idx)
                         self._write_row(ws, row, row_data, headers)
                         row += 1
                         total_options += 1
@@ -209,7 +209,7 @@ class JoomExcelExporter:
 
         return output_path
 
-    def _create_row_data(self, product, option, category_url: str = None) -> Dict:
+    def _create_row_data(self, product, option, category_url: str = None, option_idx: int = None) -> Dict:
         """행 데이터 생성 (ProductInfo 객체 또는 dict 모두 지원)"""
         # ProductInfo 객체 또는 dict 모두 지원
         if hasattr(product, 'product_id'):
@@ -274,13 +274,13 @@ class JoomExcelExporter:
             # 색상 영문 변환
             color_eng = self.color_mapper.to_english(color) if color else ''
 
-            # Variant SKU 생성
-            variant_parts = [product_id]
-            if color:
-                variant_parts.append(color[:3].upper())
-            if size:
-                variant_parts.append(str(size).replace(' ', ''))
-            variant_sku = '-'.join(variant_parts)
+            # Variant SKU 생성: product_id-순번 형식
+            # 예: 2136489-1, 2136489-2, ...
+            if option_idx is not None:
+                variant_sku = f"{product_id}-{option_idx}"
+            else:
+                # fallback: 기존 방식 (순번이 없는 경우)
+                variant_sku = product_id
 
             # option_data를 순서대로 Option1/2/3 Value에 배분
             opt_items = list(option_data.items()) if option_data else []
