@@ -464,49 +464,112 @@ class CollectorApp(ctk.CTk):
                         # JavaScript 렌더링 대기
                         await asyncio.sleep(2)
 
-                        # DOM에서 "(총 XX개)" 패턴 추출
-                        count_text = await page.evaluate("""
+                        # DOM에서 "(총 XX개)" 패턴 및 페이지네이션 정보 추출
+                        result_data = await page.evaluate("""
                             () => {
+                                let totalCount = null;
+                                let pageSize = 80;
+                                let maxPaginationPage = null;
+
+                                // 1. 전체 상품 수 찾기
                                 // 방법 1: document.body.innerText에서 "(총 XX개)" 패턴 찾기
                                 const allText = document.body.innerText;
                                 const match = allText.match(/\\(총\\s*(\\d+(?:,\\d+)?)\\s*개\\)/);
-                                if (match) return match[1];
+                                if (match) totalCount = match[1];
 
-                                // 방법 2: span 태그에서 "총 XX개" 패턴 찾기
-                                const spans = document.querySelectorAll('span');
-                                for (const span of spans) {
-                                    const text = span.textContent.trim();
-                                    if (text.includes('총') && text.includes('개')) {
-                                        const spanMatch = text.match(/총\\s*(\\d+(?:,\\d+)?)\\s*개/);
-                                        if (spanMatch) return spanMatch[1];
-                                    }
-                                }
-
-                                // 방법 3: strong 태그에서 직접 찾기
-                                const strongs = document.querySelectorAll('strong');
-                                for (const strong of strongs) {
-                                    const parent = strong.parentElement;
-                                    if (parent && parent.textContent.includes('개')) {
-                                        const num = strong.textContent.trim();
-                                        if (/^\\d+(?:,\\d+)?$/.test(num)) {
-                                            return num;
+                                if (!totalCount) {
+                                    // 방법 2: span 태그에서 "총 XX개" 패턴 찾기
+                                    const spans = document.querySelectorAll('span');
+                                    for (const span of spans) {
+                                        const text = span.textContent.trim();
+                                        if (text.includes('총') && text.includes('개')) {
+                                            const spanMatch = text.match(/총\\s*(\\d+(?:,\\d+)?)\\s*개/);
+                                            if (spanMatch) {
+                                                totalCount = spanMatch[1];
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                                return null;
+
+                                if (!totalCount) {
+                                    // 방법 3: strong 태그에서 직접 찾기
+                                    const strongs = document.querySelectorAll('strong');
+                                    for (const strong of strongs) {
+                                        const parent = strong.parentElement;
+                                        if (parent && parent.textContent.includes('개')) {
+                                            const num = strong.textContent.trim();
+                                            if (/^\\d+(?:,\\d+)?$/.test(num)) {
+                                                totalCount = num;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 2. 페이지네이션에서 최대 페이지 확인
+                                const allLinks = document.querySelectorAll('a');
+                                const numberLinks = [];
+                                for (const el of allLinks) {
+                                    const text = el.textContent.trim();
+                                    if (/^\\d+$/.test(text) && parseInt(text) <= 1000 && el.offsetParent !== null) {
+                                        numberLinks.push({ num: parseInt(text), className: el.className });
+                                    }
+                                }
+
+                                // 같은 클래스를 공유하는 숫자 링크 그룹 찾기
+                                const classGroups = {};
+                                for (const link of numberLinks) {
+                                    const cls = link.className;
+                                    if (!classGroups[cls]) classGroups[cls] = [];
+                                    classGroups[cls].push(link.num);
+                                }
+
+                                // 가장 큰 그룹이 페이지네이션
+                                let maxGroupSize = 0;
+                                for (const [cls, nums] of Object.entries(classGroups)) {
+                                    if (nums.length > maxGroupSize) {
+                                        maxGroupSize = nums.length;
+                                        maxPaginationPage = Math.max(...nums);
+                                    }
+                                }
+
+                                // 3. URL에서 size 파라미터 확인
+                                const urlParams = new URLSearchParams(window.location.search);
+                                const sizeParam = urlParams.get('size');
+                                if (sizeParam) {
+                                    pageSize = parseInt(sizeParam) || 80;
+                                }
+
+                                return {
+                                    totalCount: totalCount,
+                                    maxPaginationPage: maxPaginationPage,
+                                    pageSize: pageSize
+                                };
                             }
                         """)
 
                         await browser.close()
 
-                        if count_text:
-                            total_count = int(count_text.replace(',', ''))
-                            total_pages = (total_count + 79) // 80  # 네이버는 80개씩 페이지
-                            return {
+                        if result_data.get('totalCount'):
+                            total_count = int(result_data['totalCount'].replace(',', ''))
+                            page_size = result_data.get('pageSize', 80)
+                            total_pages = (total_count + page_size - 1) // page_size
+                            max_pagination_page = result_data.get('maxPaginationPage')
+
+                            result = {
                                 'total_count': total_count,
                                 'total_pages': total_pages,
+                                'page_size': page_size,
                                 'site': '네이버'
                             }
+
+                            # 페이지네이션에서 확인된 최대 페이지와 비교
+                            if max_pagination_page and max_pagination_page < total_pages:
+                                # 현재 보이는 페이지가 전체 페이지보다 작음 (페이지 그룹 존재)
+                                result['pagination_note'] = f"(페이지네이션: 1~{max_pagination_page} 표시, 다음 그룹 있음)"
+
+                            return result
 
                         return {'error': '상품 수를 찾을 수 없습니다.'}
 
@@ -568,8 +631,20 @@ class CollectorApp(ctk.CTk):
             total = result['total_count']
             pages = result['total_pages']
             site = result['site']
+            page_size = result.get('page_size', '')
+
+            # 기본 메시지
+            if page_size:
+                msg = f"📦 전체: {total:,}개 / {pages:,}페이지 ({page_size}개씩)"
+            else:
+                msg = f"📦 전체: {total:,}개 / {pages:,}페이지"
+
+            # 페이지네이션 참고 메시지
+            if result.get('pagination_note'):
+                msg += f"\n{result['pagination_note']}"
+
             self.product_count_label.configure(
-                text=f"📦 전체 상품: {total:,}개 / {pages:,}페이지",
+                text=msg,
                 text_color="green"
             )
 
