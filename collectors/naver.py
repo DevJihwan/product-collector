@@ -434,7 +434,7 @@ class NaverSmartStoreCollector(BaseCollector):
         """페이지 번호 버튼을 클릭하여 특정 페이지로 이동"""
         try:
             # 페이지 번호 버튼 클릭: 숫자만 있는 a/button 태그 중 동일 클래스가 여러 개인 그룹 찾기
-            clicked = await self.page.evaluate("""
+            result = await self.page.evaluate("""
                 (targetPage) => {
                     // 숫자만 포함된 a 태그를 모두 수집
                     const allLinks = document.querySelectorAll('a');
@@ -465,23 +465,70 @@ class NaverSmartStoreCollector(BaseCollector):
                     }
 
                     if (paginationGroup) {
+                        // 현재 보이는 페이지 번호 범위 확인
+                        const visiblePages = paginationGroup.map(l => l.num).sort((a, b) => a - b);
+                        const minVisible = visiblePages[0];
+                        const maxVisible = visiblePages[visiblePages.length - 1];
+
+                        // 타겟 페이지가 현재 보이는 범위에 있으면 직접 클릭
                         for (const link of paginationGroup) {
                             if (link.num === targetPage) {
                                 link.el.click();
-                                return true;
+                                return { clicked: true, action: 'direct' };
+                            }
+                        }
+
+                        // 타겟 페이지가 현재 범위보다 크면 "다음" 버튼 찾기
+                        if (targetPage > maxVisible) {
+                            // 페이지네이션 컨테이너 찾기 (페이지 번호 버튼의 부모)
+                            const firstPageBtn = paginationGroup[0].el;
+                            const container = firstPageBtn.closest('nav') || firstPageBtn.parentElement?.parentElement;
+
+                            if (container) {
+                                // "다음" 버튼 찾기 (>, 다음, next 등)
+                                const nextBtns = container.querySelectorAll('a, button');
+                                for (const btn of nextBtns) {
+                                    const text = btn.textContent.trim();
+                                    const ariaLabel = btn.getAttribute('aria-label') || '';
+                                    const title = btn.getAttribute('title') || '';
+
+                                    // ">" 또는 "다음" 또는 화살표 아이콘 버튼
+                                    if (text === '>' || text === '다음' || text === 'next' ||
+                                        text.includes('다음') || ariaLabel.includes('다음') ||
+                                        ariaLabel.includes('next') || title.includes('다음') ||
+                                        btn.querySelector('svg[class*="right"]') ||
+                                        btn.querySelector('[class*="next"]') ||
+                                        btn.querySelector('[class*="arrow"]')) {
+
+                                        // 숫자 버튼이 아닌 경우만 클릭
+                                        if (!/^\d+$/.test(text)) {
+                                            btn.click();
+                                            return { clicked: true, action: 'next_group' };
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    return false;
+                    return { clicked: false, action: null };
                 }
             """, target_page)
 
-            if clicked:
+            if result.get('clicked'):
+                action = result.get('action')
                 # 페이지 전환 대기
                 await asyncio.sleep(2)
                 await self.page.evaluate('window.scrollTo(0, 0)')
                 await asyncio.sleep(0.5)
+
+                # "다음 그룹" 버튼을 클릭한 경우, 타겟 페이지 버튼을 다시 클릭
+                if action == 'next_group':
+                    self.log(f"    → 다음 페이지 그룹으로 이동")
+                    await asyncio.sleep(1)
+                    # 재귀적으로 다시 시도 (새 페이지 그룹에서 타겟 페이지 클릭)
+                    return await self._navigate_to_page(target_page)
+
                 return True
 
             self.log(f"    ⚠️ 페이지 {target_page} 버튼을 찾지 못함")
