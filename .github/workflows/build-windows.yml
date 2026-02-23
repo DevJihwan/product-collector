@@ -14,22 +14,28 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Cleanup old artifacts (keep latest 1)
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           Write-Host "Fetching artifacts..."
-          $artifacts = gh api repos/${{ github.repository }}/actions/artifacts --paginate -q '.artifacts | sort_by(.created_at) | reverse | .[1:] | .[].id' 2>$null
-          if ($artifacts) {
-            $ids = $artifacts -split "`n" | Where-Object { $_ -match '^\d+$' }
-            Write-Host "Found $($ids.Count) old artifacts to delete"
-            foreach ($id in $ids) {
-              Write-Host "Deleting artifact: $id"
-              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" 2>$null
+          try {
+            $response = gh api repos/${{ github.repository }}/actions/artifacts --paginate 2>$null | ConvertFrom-Json
+            $artifacts = $response.artifacts | Sort-Object -Property created_at -Descending | Select-Object -Skip 1
+            if ($artifacts.Count -gt 0) {
+              Write-Host "Found $($artifacts.Count) old artifacts to delete"
+              foreach ($artifact in $artifacts) {
+                Write-Host "Deleting artifact: $($artifact.id) - $($artifact.name)"
+                gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$($artifact.id)" 2>$null
+              }
+              Write-Host "Cleanup completed"
+            } else {
+              Write-Host "No old artifacts to delete"
             }
-            Write-Host "Cleanup completed"
-          } else {
-            Write-Host "No old artifacts to delete"
+          } catch {
+            Write-Host "Cleanup skipped (no artifacts or error)"
           }
+          exit 0
 
       - name: Get build date
         id: date
