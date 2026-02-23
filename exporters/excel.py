@@ -288,6 +288,14 @@ class JoomExcelExporter:
             opt2_value = opt_items[1][1] if len(opt_items) > 1 else ''
             opt3_value = opt_items[2][1] if len(opt_items) > 2 else ''
 
+            # Total_Price 계산
+            # 네이버: Price(배송비) + Sale_Price(판매가) + Additional_Price
+            # 무신사/다이소: Sale_Price + Additional_Price (Price는 정가이므로 제외)
+            if self.site_type == "naver":
+                total_price = data['Price'] + data['Sale_Price'] + additional_price
+            else:
+                total_price = data['Sale_Price'] + additional_price
+
             data.update({
                 'Variant_SKU': variant_sku,
                 'Color': color_eng,
@@ -296,7 +304,7 @@ class JoomExcelExporter:
                 'Option2_Value': opt2_value,
                 'Option3_Value': opt3_value,
                 'Additional_Price': additional_price,
-                'Total_Price': data['Sale_Price'] + additional_price,
+                'Total_Price': total_price,
                 'Stock': 0 if sold_out else stock,
                 'SoldOut': 'Y' if sold_out else 'N',
             })
@@ -329,6 +337,12 @@ class JoomExcelExporter:
                 data['Detail_Images'] = ', '.join(option_detail_images)
         else:
             # 옵션 없는 경우
+            # Total_Price 계산
+            if self.site_type == "naver":
+                total_price = data['Price'] + data['Sale_Price']
+            else:
+                total_price = data['Sale_Price']
+
             data.update({
                 'Variant_SKU': product_id,
                 'Color': '',
@@ -337,7 +351,7 @@ class JoomExcelExporter:
                 'Option2_Value': '',
                 'Option3_Value': '',
                 'Additional_Price': 0,
-                'Total_Price': data['Sale_Price'],
+                'Total_Price': total_price,
                 'Stock': self.config.DEFAULT_STOCK,
                 'SoldOut': 'N',
             })

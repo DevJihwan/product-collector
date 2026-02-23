@@ -745,6 +745,22 @@ class NaverSmartStoreCollector(BaseCollector):
                 self.logger.debug(f"PRELOADED_STATE 카테고리 추출 실패: {e}")
 
         if product_data:
+            # 가격 정보 수정: 배송비와 판매가 분리
+            # - Price (정가) 란에 → 배송비
+            # - Sale_Price (판매가) → 실제 판매가
+            # - Total_Price → 배송비 + 판매가
+            delivery_info = product_data.get('productDeliveryInfo', {})
+            delivery_fee = delivery_info.get('baseFee', 0) or 0
+
+            # 실제 판매가 (benefitsView.discountedSalePrice 우선, 없으면 salePrice)
+            benefits = product_data.get('benefitsView', {})
+            actual_sale_price = benefits.get('discountedSalePrice', 0) or product_data.get('salePrice', 0)
+
+            # 가격 필드 업데이트
+            product.price = delivery_fee  # Price 란에 배송비
+            product.sale_price = actual_sale_price  # Sale_Price에 판매가
+            product.extra_info['delivery_fee'] = delivery_fee  # 참고용
+
             # 원산지
             origin_info = product_data.get('originAreaInfo', {})
             product.extra_info['origin'] = origin_info.get('content', '') if origin_info else ''
