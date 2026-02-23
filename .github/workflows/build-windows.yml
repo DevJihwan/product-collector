@@ -13,6 +13,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Cleanup old artifacts (keep latest 1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Write-Host "Fetching artifacts..."
+          $artifacts = gh api repos/${{ github.repository }}/actions/artifacts --paginate -q '.artifacts | sort_by(.created_at) | reverse | .[1:] | .[].id' 2>$null
+          if ($artifacts) {
+            $ids = $artifacts -split "`n" | Where-Object { $_ -match '^\d+$' }
+            Write-Host "Found $($ids.Count) old artifacts to delete"
+            foreach ($id in $ids) {
+              Write-Host "Deleting artifact: $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" 2>$null
+            }
+            Write-Host "Cleanup completed"
+          } else {
+            Write-Host "No old artifacts to delete"
+          }
+
       - name: Get build date
         id: date
         run: |
@@ -81,4 +99,4 @@ jobs:
             dist/ProductCollector.exe
             dist/install_browser.bat
             dist/README.txt
-          retention-days: 30
+          retention-days: 7
