@@ -426,9 +426,34 @@ class DaisoCollector(BaseCollector):
         return product
 
     async def collect_options(self, product: ProductInfo) -> List[ProductOption]:
-        """상품 옵션 수집 (옵션별 이미지 포함)"""
+        """상품 옵션 수집 - 대표 상품 1개만 수집 (옵션 순회 비활성화)"""
         options = []
 
+        # 대표 상품 1개만 수집 (옵션 순회 없이)
+        # 상세 페이지에서 수집한 이미지 정보 사용
+        extra_images = product.extra_info.get('extra_images', [])
+        detail_images = product.extra_info.get('detail_images', [])
+
+        options.append(ProductOption(
+            color="",
+            size="기본",
+            additional_price=0,
+            stock=100,
+            sold_out=product.extra_info.get('sold_out', False),
+            option_data={"옵션": "기본"},
+            image_url=product.image_url,
+            extra_images=extra_images,
+            detail_images=detail_images
+        ))
+
+        return options
+
+        # ============================================================
+        # [비활성화] 옵션 순회 수집 로직
+        # 아래 코드는 옵션별로 클릭하며 이미지를 수집하는 기존 로직입니다.
+        # 필요시 위의 return 문을 제거하고 아래 코드를 활성화하세요.
+        # ============================================================
+        """
         # 옵션 상품이 아니면 기본 옵션 반환
         if not product.extra_info.get('has_option', False):
             options.append(ProductOption(
@@ -450,7 +475,7 @@ class DaisoCollector(BaseCollector):
                 await asyncio.sleep(2)
 
             # 1. 옵션 버튼 정보 먼저 수집
-            option_buttons = await self.page.evaluate("""
+            option_buttons = await self.page.evaluate('''
                 () => {
                     const options = [];
                     const buttons = document.querySelectorAll('.product-option-button');
@@ -480,7 +505,7 @@ class DaisoCollector(BaseCollector):
 
                     return options;
                 }
-            """)
+            ''')
 
             # 2. 각 옵션 클릭하며 이미지 수집
             option_data = []
@@ -488,16 +513,16 @@ class DaisoCollector(BaseCollector):
                 idx = opt_info['idx']
 
                 # 옵션 버튼 클릭
-                await self.page.evaluate(f"""
+                await self.page.evaluate(f'''
                     () => {{
                         const buttons = document.querySelectorAll('.product-option-button');
                         if (buttons[{idx}]) buttons[{idx}].click();
                     }}
-                """)
+                ''')
                 await asyncio.sleep(0.5)
 
                 # 썸네일/갤러리 이미지 수집
-                images = await self.page.evaluate("""
+                images = await self.page.evaluate('''
                     () => {
                         const images = [];
                         const swiperImgs = document.querySelectorAll('.goods-swiper-wrap .swiper-slide:not(.swiper-slide-duplicate) img');
@@ -510,10 +535,10 @@ class DaisoCollector(BaseCollector):
                         });
                         return images;
                     }
-                """)
+                ''')
 
                 # 상세 설명 이미지 수집
-                detail_images = await self.page.evaluate("""
+                detail_images = await self.page.evaluate('''
                     () => {
                         const images = [];
                         const detailSelectors = ['.editor-content img', '.editor-area img', '.product-detail img', '.detail-content img'];
@@ -530,7 +555,7 @@ class DaisoCollector(BaseCollector):
                         }
                         return images;
                     }
-                """)
+                ''')
 
                 option_data.append({
                     **opt_info,
@@ -584,6 +609,7 @@ class DaisoCollector(BaseCollector):
             ))
 
         return options
+        """
 
 
 def is_daiso_url(url: str) -> bool:
