@@ -746,20 +746,94 @@ class NaverSmartStoreCollector(BaseCollector):
 
         if product_data:
             # 가격 정보 수정: 배송비와 판매가 분리
-            # - Price (정가) 란에 → 배송비
+            # - Price (정가) 란에 → 배송비 (화면에 표시된 값 기준)
             # - Sale_Price (판매가) → 실제 판매가
             # - Total_Price → 배송비 + 판매가
             delivery_info = product_data.get('productDeliveryInfo', {})
-            delivery_fee = delivery_info.get('baseFee', 0) or 0
+            delivery_fee_type = delivery_info.get('deliveryFeeType', '')
+            base_fee = delivery_info.get('baseFee', 0) or 0
 
             # 실제 판매가 (benefitsView.discountedSalePrice 우선, 없으면 salePrice)
             benefits = product_data.get('benefitsView', {})
             actual_sale_price = benefits.get('discountedSalePrice', 0) or product_data.get('salePrice', 0)
 
+            # 배송비 계산: DOM에서 실제 표시되는 값을 먼저 확인
+            # (판매자가 "무료배송" 설정 시 API와 다를 수 있음)
+            delivery_fee = None
+            dom_delivery_source = None
+
+            if self.page:
+                try:
+                    # 페이지 렌더링 대기
+                    await asyncio.sleep(1)
+
+                    dom_delivery = await self.page.evaluate('''() => {
+                        const result = { found: false, isFree: false, fee: 0, debug: '' };
+                        const allText = document.body.innerText;
+                        const lines = allText.split('\\n');
+
+                        for (let i = 0; i < lines.length; i++) {
+                            const line = lines[i].trim();
+                            // "배송비" 키워드가 있는 라인 찾기 (정확히 "배송비"만 있는 라인)
+                            if (line === '배송비') {
+                                // 다음 라인에서 배송비 정보 확인
+                                if (i + 1 < lines.length) {
+                                    const nextLine = lines[i + 1].trim();
+                                    result.debug = nextLine;
+
+                                    // 무료배송 체크
+                                    if (nextLine === '무료배송' || nextLine.startsWith('무료배송')) {
+                                        result.isFree = true;
+                                        result.fee = 0;
+                                        result.found = true;
+                                        break;
+                                    }
+                                    // 금액 패턴 확인 (예: "3,000원", "무료")
+                                    if (nextLine === '무료' || nextLine.startsWith('무료')) {
+                                        result.isFree = true;
+                                        result.fee = 0;
+                                        result.found = true;
+                                        break;
+                                    }
+                                    const feeMatch = nextLine.match(/^([0-9,]+)원/);
+                                    if (feeMatch) {
+                                        result.fee = parseInt(feeMatch[1].replace(/,/g, ''));
+                                        result.found = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        return result;
+                    }''')
+
+                    if dom_delivery.get('found'):
+                        delivery_fee = dom_delivery.get('fee', 0)
+                        dom_delivery_source = 'DOM'
+                        self.logger.debug(f"DOM 배송비: {delivery_fee}원 (무료: {dom_delivery.get('isFree')}, debug: {dom_delivery.get('debug')})")
+                    else:
+                        self.logger.debug(f"DOM 배송비 미발견 (debug: {dom_delivery.get('debug')})")
+                except Exception as e:
+                    self.logger.debug(f"DOM 배송비 추출 실패: {e}")
+
+            # DOM에서 못 찾으면 API 데이터 기반으로 계산 (폴백)
+            if delivery_fee is None:
+                free_condition = delivery_info.get('freeConditionalAmount', 0) or 0
+                if delivery_fee_type == 'FREE':
+                    delivery_fee = 0
+                elif delivery_fee_type == 'CONDITIONAL_FREE' and actual_sale_price >= free_condition:
+                    delivery_fee = 0
+                else:
+                    delivery_fee = base_fee
+                dom_delivery_source = 'API'
+                self.logger.debug(f"API 배송비: {delivery_fee}원 (type: {delivery_fee_type})")
+
             # 가격 필드 업데이트
             product.price = delivery_fee  # Price 란에 배송비
             product.sale_price = actual_sale_price  # Sale_Price에 판매가
             product.extra_info['delivery_fee'] = delivery_fee  # 참고용
+            product.extra_info['delivery_fee_type'] = delivery_fee_type  # 참고용
+            product.extra_info['delivery_source'] = dom_delivery_source  # 배송비 출처
 
             # 원산지
             origin_info = product_data.get('originAreaInfo', {})
