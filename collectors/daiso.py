@@ -327,16 +327,18 @@ class DaisoCollector(BaseCollector):
                         });
                     }
 
-                    // 4. 상세 설명 이미지 (.editor-content 내부)
-                    const editorImgs = document.querySelectorAll('.editor-content img, .editor-area img');
+                    // 4. 상세 설명 이미지 (.editor-content, .editor-area, .tab-cont 내부)
+                    const editorImgs = document.querySelectorAll('.editor-content img, .editor-area img, .tab-cont.detail img');
                     editorImgs.forEach(img => {
                         let src = img.src || img.getAttribute('data-src') || '';
+                        // /dims/ 파라미터 제거하여 원본 URL 추출
                         if (src.includes('/dims/')) {
                             src = src.split('/dims/')[0];
                         } else if (src.includes('?')) {
                             src = src.split('?')[0];
                         }
-                        if (src && src.includes('cdn.daisomall') && src.includes('/file/PD/') && !seenUrls.has(src)) {
+                        // /file/ 경로의 다이소 CDN 이미지만 수집 (resize 포함)
+                        if (src && src.includes('cdn.daisomall') && src.includes('/file/') && !seenUrls.has(src)) {
                             seenUrls.add(src);
                             result.detail_images.push(src);
                         }
