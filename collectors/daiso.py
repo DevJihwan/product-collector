@@ -241,11 +241,12 @@ class DaisoCollector(BaseCollector):
             await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
             await asyncio.sleep(2)
 
-            # 1단계: 기본 정보 추출 (카테고리, 썸네일, 상세 이미지)
+            # 1단계: 기본 정보 추출 (상품명, 가격, 카테고리, 썸네일, 상세 이미지)
             detail_info = await self.page.evaluate("""
                 () => {
                     const result = {
                         title: '',
+                        price: 0,
                         category: '',
                         thumbnail_images: [],
                         detail_images: []
@@ -272,12 +273,25 @@ class DaisoCollector(BaseCollector):
                     }
 
                     // 2. 상품명
-                    const titleSelectors = ['.product-name', '.prd-name', 'h1.title', 'h1', '.goods-name'];
+                    const titleSelectors = ['.product-title', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
                     for (const sel of titleSelectors) {
                         const el = document.querySelector(sel);
                         if (el && el.textContent.trim().length > 2) {
                             result.title = el.textContent.trim();
                             break;
+                        }
+                    }
+
+                    // 3. 가격 추출
+                    const priceSelectors = ['.price-value', '.product-price', '.price', '.prd-price', '.product-info .price', '.goods-price'];
+                    for (const sel of priceSelectors) {
+                        const el = document.querySelector(sel);
+                        if (el) {
+                            const priceText = el.textContent.replace(/[^0-9]/g, '');
+                            if (priceText) {
+                                result.price = parseInt(priceText) || 0;
+                                break;
+                            }
                         }
                     }
 
@@ -381,8 +395,14 @@ class DaisoCollector(BaseCollector):
             """)
 
             # 상세 정보 업데이트
-            if detail_info.get('title') and not product.product_name:
+            # 상품명 (DOM에서 추출한 값으로 업데이트)
+            if detail_info.get('title'):
                 product.product_name = detail_info['title']
+
+            # 가격 (DOM에서 추출한 값으로 업데이트, 기존 값이 없을 때)
+            if detail_info.get('price') and not product.price:
+                product.price = detail_info['price']
+                product.sale_price = detail_info['price']  # 다이소는 단일 가격
 
             # 카테고리 업데이트
             if detail_info.get('category'):
