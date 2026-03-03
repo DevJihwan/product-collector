@@ -862,6 +862,47 @@ class NaverSmartStoreCollector(BaseCollector):
                     product.extra_info['foot_length'] = size_info.get('발길이', '')
                     product.extra_info['heel_height'] = size_info.get('굽높이', '')
 
+                # KC 인증정보 (상품정보제공고시 내)
+                kc_info = basic.get('KC 인증정보', '')
+                if kc_info:
+                    product.extra_info['kc_certification'] = kc_info
+
+            # productCertificationInfos (인증 정보 상세)
+            cert_infos = product_data.get('productCertificationInfos', [])
+            if cert_infos:
+                cert_list = []
+                for cert in cert_infos:
+                    cert_entry = {
+                        'type': cert.get('certificationTypeName', ''),
+                        'agency': cert.get('name', ''),
+                        'number': cert.get('certificationNumber', ''),
+                        'company': cert.get('companyName', ''),
+                    }
+                    cert_list.append(cert_entry)
+
+                product.extra_info['certification_infos'] = cert_list
+
+                # description에 인증 정보 추가 (기존 description에 병합)
+                cert_texts = []
+                for cert in cert_list:
+                    parts = [cert['type']]
+                    if cert['agency']:
+                        parts.append(f"인증기관: {cert['agency']}")
+                    if cert['number']:
+                        parts.append(f"인증번호: {cert['number']}")
+                    if cert['company']:
+                        parts.append(f"제조사: {cert['company']}")
+                    cert_texts.append(' / '.join(parts))
+
+                cert_text = '[인증정보]\n' + '\n'.join(cert_texts)
+                existing_desc = product.extra_info.get('description', '')
+                if existing_desc:
+                    product.extra_info['description'] = existing_desc + '\n\n' + cert_text
+                else:
+                    product.extra_info['description'] = cert_text
+
+                self.logger.debug(f"인증 정보 {len(cert_list)}건 수집")
+
             # detailAttributes (상세속성) - 카테고리별로 다름
             detail_attrs = product_data.get('detailAttributes', {})
             if detail_attrs:
@@ -870,6 +911,44 @@ class NaverSmartStoreCollector(BaseCollector):
                     # 키를 영문으로 변환
                     eng_key = self._korean_key_to_english(key)
                     product.extra_info[eng_key] = value
+
+                # description에 상세속성 추가
+                attr_lines = [f"{key}: {value}" for key, value in detail_attrs.items() if value]
+                if attr_lines:
+                    attr_text = '[상품속성]\n' + '\n'.join(attr_lines)
+                    existing_desc = product.extra_info.get('description', '')
+                    if existing_desc:
+                        product.extra_info['description'] = attr_text + '\n\n' + existing_desc
+                    else:
+                        product.extra_info['description'] = attr_text
+
+            # productAttributes (상품 속성 - 구조화된 형태)
+            prod_attrs = product_data.get('productAttributes', [])
+            if prod_attrs:
+                # 같은 attributeName을 가진 항목 그룹핑 (예: 장르가 여러 개)
+                attr_map = {}
+                for attr in prod_attrs:
+                    name = attr.get('attributeName', '')
+                    val = attr.get('minAttributeValue', '')
+                    unit = attr.get('minAttributeValueUnitText', '')
+                    if name and val:
+                        full_val = f"{val}{unit}" if unit else val
+                        if name in attr_map:
+                            attr_map[name] += f", {full_val}"
+                        else:
+                            attr_map[name] = full_val
+
+                if attr_map:
+                    pa_lines = [f"{k}: {v}" for k, v in attr_map.items()]
+                    pa_text = '[상품속성]\n' + '\n'.join(pa_lines)
+
+                    existing_desc = product.extra_info.get('description', '')
+                    # 이미 detailAttributes로 [상품속성]이 있으면 중복 방지
+                    if '[상품속성]' not in existing_desc:
+                        if existing_desc:
+                            product.extra_info['description'] = pa_text + '\n\n' + existing_desc
+                        else:
+                            product.extra_info['description'] = pa_text
 
             # 추가 이미지 수집 (갤러리 이미지)
             product_images = product_data.get('productImages', []) or product_data.get('galleryImages', [])
