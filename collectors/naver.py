@@ -86,10 +86,17 @@ class NaverSmartStoreCollector(BaseCollector):
             const nameEl = card.querySelector('strong, [class*="name" i], [class*="title" i]');
             const name = nameEl ? nameEl.textContent.trim() : '';
 
-            // 가격 추출
+            // 가격 추출 (배송비 제외)
+            // 카드 텍스트 패턴:
+            //   비할인: [상품가, 배송비] (2개, 취소선 없음)
+            //   할인:   [정가, 할인가, 배송비] (3개, 취소선 있음)
+            // → 가격이 2개 이상이면 마지막은 배송비이므로 제외
             const allText = card.textContent;
             const priceMatches = allText.match(/[0-9,]+원/g) || [];
-            const prices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, '')));
+            const allPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, '')));
+
+            // 가격이 2개 이상이면 마지막 가격(배송비) 제외
+            const prices = allPrices.length >= 2 ? allPrices.slice(0, -1) : allPrices;
 
             // 이미지
             const img = card.querySelector('img');
