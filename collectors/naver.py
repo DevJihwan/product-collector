@@ -278,14 +278,30 @@ class NaverSmartStoreCollector(BaseCollector):
 
                 # totalCount가 0이었지만 DOM에서 상품을 찾은 경우, total_pages 재계산
                 if total_count == 0 and len(new_products) >= page_size:
-                    # DOM에서 페이지 수 추출 시도
+                    # DOM에서 페이지 수 추출 시도 (숫자 링크 그룹 탐색)
                     dom_total_pages = await self.page.evaluate("""
                         () => {
-                            const btns = document.querySelectorAll('a[class*="pagination"], button[class*="pagination"]');
+                            const allEls = document.querySelectorAll('a, button');
+                            const numberEls = [];
+                            for (const el of allEls) {
+                                const text = el.textContent.trim();
+                                if (/^\\d+$/.test(text) && parseInt(text) <= 100 && el.offsetParent !== null) {
+                                    numberEls.push({ num: parseInt(text), className: el.className });
+                                }
+                            }
+                            // 같은 클래스 그룹 중 가장 큰 그룹에서 최대 페이지 번호 추출
+                            const classGroups = {};
+                            for (const el of numberEls) {
+                                if (!classGroups[el.className]) classGroups[el.className] = [];
+                                classGroups[el.className].push(el.num);
+                            }
                             let maxPage = 1;
-                            for (const btn of btns) {
-                                const num = parseInt(btn.textContent.trim());
-                                if (!isNaN(num) && num > maxPage) maxPage = num;
+                            let maxGroupSize = 0;
+                            for (const [cls, nums] of Object.entries(classGroups)) {
+                                if (nums.length > maxGroupSize) {
+                                    maxGroupSize = nums.length;
+                                    maxPage = Math.max(...nums);
+                                }
                             }
                             return maxPage;
                         }
@@ -443,8 +459,8 @@ class NaverSmartStoreCollector(BaseCollector):
             # 페이지 번호 버튼 클릭: 숫자만 있는 a/button 태그 중 동일 클래스가 여러 개인 그룹 찾기
             result = await self.page.evaluate("""
                 (targetPage) => {
-                    // 숫자만 포함된 a 태그를 모두 수집
-                    const allLinks = document.querySelectorAll('a');
+                    // 숫자만 포함된 a/button 태그를 모두 수집
+                    const allLinks = document.querySelectorAll('a, button');
                     const numberLinks = [];
                     for (const el of allLinks) {
                         const text = el.textContent.trim();
@@ -538,11 +554,28 @@ class NaverSmartStoreCollector(BaseCollector):
 
                 return True
 
-            self.log(f"    ⚠️ 페이지 {target_page} 버튼을 찾지 못함")
-            return False
+            # 버튼 클릭 실패 → URL 기반 네비게이션 폴백
+            self.log(f"    ⚠️ 페이지 {target_page} 버튼을 찾지 못함 → URL 이동 시도")
+            return await self._navigate_to_page_by_url(target_page)
 
         except Exception as e:
             self.logger.error(f"페이지 {target_page} 이동 실패: {e}")
+            # 예외 시에도 URL 폴백 시도
+            try:
+                return await self._navigate_to_page_by_url(target_page)
+            except Exception:
+                return False
+
+    async def _navigate_to_page_by_url(self, target_page: int) -> bool:
+        """URL 직접 변경으로 페이지 이동 (버튼 클릭 실패 시 폴백)"""
+        try:
+            page_url = self._build_page_url(self.state.url, target_page)
+            self.log(f"    → URL 이동: page={target_page}")
+            await self.page.goto(page_url, wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+            return True
+        except Exception as e:
+            self.logger.error(f"URL 기반 페이지 이동 실패: {e}")
             return False
 
     def _build_page_url(self, base_url: str, page: int) -> str:
@@ -550,7 +583,8 @@ class NaverSmartStoreCollector(BaseCollector):
         parsed = urlparse(base_url)
         query = parse_qs(parsed.query)
 
-        # 페이지 파라미터 설정
+        # 페이지 파라미터 설정 (page와 cp 모두 업데이트)
+        query['page'] = [str(page)]
         query['cp'] = [str(page)]
         if 'st' not in query:
             query['st'] = ['POPULAR']
