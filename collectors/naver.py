@@ -27,6 +27,7 @@ class NaverSmartStoreCollector(BaseCollector):
         self.store_type = "brand"  # brand or smartstore
         self.channel_id = None  # 카테고리 로드 시 캡처
         self.current_store_category = ""  # 현재 수집 중인 스토어 카테고리명
+        self.page_size = None  # 서버 응답 pageSize (동적)
 
     def parse_url(self, url: str) -> Dict[str, Any]:
         """
@@ -158,35 +159,92 @@ class NaverSmartStoreCollector(BaseCollector):
 
         self.page.remove_listener('response', capture_channel_id)
 
-        # __PRELOADED_STATE__에서 총 상품수/페이지사이즈 정보 추출 (1회)
+        # 1) HTML DOM에서 전체 상품수 + 페이지당 상품수 추출
         total_count = 0
-        page_size = 40
+        page_size = 0
+        try:
+            # DOM에서 전체 상품 건수 읽기 ("전체 2,000개", "총 500개" 등)
+            total_count = await self.page.evaluate("""
+                () => {
+                    const body = document.body.innerText;
+                    // "전체 N개", "총 N개", "N개의 상품" 등 패턴 매칭
+                    const patterns = [
+                        /전체\\s*([0-9,]+)\\s*개/,
+                        /총\\s*([0-9,]+)\\s*개/,
+                        /([0-9,]+)\\s*개의\\s*상품/,
+                        /상품\\s*([0-9,]+)\\s*개/,
+                    ];
+                    for (const p of patterns) {
+                        const m = body.match(p);
+                        if (m) return parseInt(m[1].replace(/,/g, ''));
+                    }
+                    return 0;
+                }
+            """) or 0
+
+            # 첫 페이지에 렌더링된 상품 수 = page_size
+            first_page_count = await self.page.evaluate("""
+                () => {
+                    const links = document.querySelectorAll('a[href*="/products/"]');
+                    const seen = new Set();
+                    for (const link of links) {
+                        const m = link.href.match(/\\/products\\/(\\d+)/);
+                        if (m) seen.add(m[1]);
+                    }
+                    return seen.size;
+                }
+            """) or 0
+
+            if first_page_count > 0:
+                page_size = first_page_count
+                self.page_size = page_size
+                self.logger.debug(f"DOM page_size: {page_size} (첫 페이지 상품 수)")
+        except Exception as e:
+            self.logger.debug(f"DOM 전체건수 추출 실패: {e}")
+
+        # 2) DOM에서 못 읽은 경우 __PRELOADED_STATE__ 폴백
+        if total_count == 0 or page_size == 0:
+            try:
+                html = await self.page.content()
+                match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*({.+?});?\s*</script>', html, re.DOTALL)
+                if match:
+                    state_data = json.loads(match.group(1))
+                    category_data = state_data.get('category', {})
+                    for key in category_data:
+                        if isinstance(category_data[key], dict):
+                            sub_data = category_data[key]
+                            if sub_data.get('simpleProducts'):
+                                if total_count == 0:
+                                    total_count = sub_data.get('totalCount', 0)
+                                if page_size == 0:
+                                    page_size = sub_data.get('pageSize', self.naver_config.ITEMS_PER_PAGE)
+                                    self.page_size = page_size
+                                break
+            except Exception as e:
+                self.logger.debug(f"__PRELOADED_STATE__ 폴백 실패: {e}")
+
+        # 최종 폴백
+        if page_size == 0:
+            page_size = self.naver_config.ITEMS_PER_PAGE
+            self.page_size = page_size
+
+        # 3) __PRELOADED_STATE__에서 카테고리명, channel_id 추출 (별도)
         try:
             html = await self.page.content()
             match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*({.+?});?\s*</script>', html, re.DOTALL)
             if match:
                 state_data = json.loads(match.group(1))
-                category_data = state_data.get('category', {})
-                for key in category_data:
-                    if isinstance(category_data[key], dict):
-                        sub_data = category_data[key]
-                        if sub_data.get('simpleProducts'):
-                            total_count = sub_data.get('totalCount', 0)
-                            page_size = sub_data.get('pageSize', 40)
-                            break
 
-                # 스토어 카테고리 이름 추출 (categoryNames에서)
+                # 스토어 카테고리 이름 추출
                 category_names = state_data.get('categoryNames', {})
                 if category_names:
                     a_data = category_names.get('A', {})
                     if a_data and url_info.get('category_id'):
                         cat_id = url_info['category_id']
-                        # categoryNames에서 해당 카테고리 ID의 이름 찾기
                         if cat_id in a_data:
                             self.current_store_category = a_data[cat_id]
                             self.logger.debug(f"스토어 카테고리: {self.current_store_category}")
                         else:
-                            # storeCategory.firstCategories에서 찾기
                             store_cat = state_data.get('storeCategory', {})
                             a_store = store_cat.get('A', {})
                             first_cats = a_store.get('firstCategories', [])
@@ -196,14 +254,12 @@ class NaverSmartStoreCollector(BaseCollector):
                                     self.logger.debug(f"스토어 카테고리 (firstCategories): {self.current_store_category}")
                                     break
 
-                # __PRELOADED_STATE__에서 channel_id 폴백 추출
+                # channel_id 추출
                 if not self.channel_id:
-                    # 방법1: channel 키 직접 탐색
                     channel_info = state_data.get('channel', {})
                     if isinstance(channel_info, dict):
                         cid = channel_info.get('channelNo') or channel_info.get('id')
                         if not cid:
-                            # {'A': {channelNo: ...}} 형태 대응
                             for v in channel_info.values():
                                 if isinstance(v, dict):
                                     cid = v.get('channelNo') or v.get('id')
@@ -212,7 +268,6 @@ class NaverSmartStoreCollector(BaseCollector):
                         if cid:
                             self.channel_id = str(cid)
                             self.logger.debug(f"channel_id (PRELOADED_STATE): {self.channel_id}")
-                    # 방법2: 중첩 탐색
                     if not self.channel_id:
                         for key, val in state_data.items():
                             if isinstance(val, dict):
@@ -222,7 +277,7 @@ class NaverSmartStoreCollector(BaseCollector):
                                     self.logger.debug(f"channel_id (nested): {self.channel_id}")
                                     break
         except Exception as e:
-            self.logger.debug(f"__PRELOADED_STATE__ 파싱 실패: {e}")
+            self.logger.debug(f"카테고리/channel_id 추출 실패: {e}")
 
         if self.channel_id:
             self.log(f"  channel_id: {self.channel_id}")
@@ -590,8 +645,8 @@ class NaverSmartStoreCollector(BaseCollector):
             query['st'] = ['POPULAR']
         if 'dt' not in query:
             query['dt'] = ['BIG_IMAGE']
-        if 'size' not in query:
-            query['size'] = ['40']
+        effective_size = self.page_size or self.naver_config.ITEMS_PER_PAGE
+        query['size'] = [str(effective_size)]
 
         query_str = '&'.join(f"{k}={v[0]}" for k, v in query.items())
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{query_str}"
