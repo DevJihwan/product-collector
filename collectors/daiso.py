@@ -75,8 +75,8 @@ class DaisoCollector(BaseCollector):
 
         # 최초 1회 페이지 방문 (쿠키/세션 획득)
         try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
-            await asyncio.sleep(3)
+            await self.page.goto(url, wait_until="networkidle", timeout=self.config.PAGE_TIMEOUT)
+            await asyncio.sleep(2)
         except Exception as e:
             self.log(f"  ⚠️ 초기 페이지 로드 실패: {e}")
 
@@ -237,9 +237,24 @@ class DaisoCollector(BaseCollector):
         detail_url = product.url
 
         try:
-            # 상세 페이지 방문
-            await self.page.goto(detail_url, wait_until="domcontentloaded", timeout=self.config.PAGE_TIMEOUT)
-            await asyncio.sleep(2)
+            # 상세 페이지 방문 (networkidle: AJAX 완료 대기)
+            await self.page.goto(detail_url, wait_until="networkidle", timeout=self.config.PAGE_TIMEOUT)
+
+            # SPA 렌더링 대기: 상품명 요소가 실제 텍스트를 포함할 때까지 대기
+            try:
+                await self.page.wait_for_function("""
+                    () => {
+                        const selectors = ['.product-title', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
+                        for (const sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.textContent.trim().length > 2) return true;
+                        }
+                        return false;
+                    }
+                """, timeout=10000)
+            except Exception:
+                self.log(f"  ⚠️ 상품명 요소 대기 타임아웃 [{pd_no}], 계속 진행")
+            await asyncio.sleep(1)
 
             # 1단계: 기본 정보 추출 (상품명, 가격, 카테고리, 썸네일, 상세 이미지)
             detail_info = await self.page.evaluate("""
@@ -397,9 +412,16 @@ class DaisoCollector(BaseCollector):
             """)
 
             # 상세 정보 업데이트
-            # 상품명 (DOM에서 추출한 값으로 업데이트)
-            if detail_info.get('title'):
-                product.product_name = detail_info['title']
+            # 상품명: DOM에서 추출한 값이 유효할 때만 업데이트
+            # - URL의 pdNo와 페이지 내용이 일치하는지 검증
+            dom_title = detail_info.get('title', '')
+            if dom_title:
+                # 페이지 URL에 현재 상품 pdNo가 포함되어 있는지 확인
+                current_page_url = self.page.url
+                if pd_no in current_page_url:
+                    product.product_name = dom_title
+                else:
+                    self.log(f"  ⚠️ 상품명 불일치 [{pd_no}]: 페이지 URL={current_page_url}, API 상품명 유지")
 
             # 가격 (DOM에서 추출한 값으로 업데이트, 기존 값이 없을 때)
             if detail_info.get('price') and not product.price:
