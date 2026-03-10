@@ -244,7 +244,7 @@ class DaisoCollector(BaseCollector):
             try:
                 await self.page.wait_for_function("""
                     () => {
-                        const selectors = ['.product-title', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
+                        const selectors = ['h1.product-title', '.product-title.lg', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
                         for (const sel of selectors) {
                             const el = document.querySelector(sel);
                             if (el && el.textContent.trim().length > 2) return true;
@@ -287,8 +287,8 @@ class DaisoCollector(BaseCollector):
                         }
                     }
 
-                    // 2. 상품명
-                    const titleSelectors = ['.product-title', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
+                    // 2. 상품명 (h1.product-title 우선: 추천상품 위젯의 .product-title.sm 제외)
+                    const titleSelectors = ['h1.product-title', '.product-title.lg', '.product-name', '.prd-name', 'h1.title', '.goods-name', '.product-info .name'];
                     for (const sel of titleSelectors) {
                         const el = document.querySelector(sel);
                         if (el && el.textContent.trim().length > 2) {
