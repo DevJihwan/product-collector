@@ -1046,43 +1046,62 @@ class NaverSmartStoreCollector(BaseCollector):
                         else:
                             product.extra_info['description'] = pa_text
 
-            # 추가 이미지 수집 (갤러리 이미지)
+            # 추가 이미지 수집 (갤러리 이미지) - API productImages 사용
             product_images = product_data.get('productImages', []) or product_data.get('galleryImages', [])
             if product_images:
-                extra_images = []
-                for img_data in product_images:
-                    img_url = img_data.get('url', '')
-                    if img_url:
-                        extra_images.append(img_url)
-                product.extra_info['extra_images'] = extra_images
+                extra_images = [img.get('url', '') for img in product_images if img.get('url')]
+                if extra_images:
+                    # 첫 번째 이미지를 대표 이미지로 설정
+                    product.image_url = extra_images[0]
+                    product.extra_info['extra_images'] = extra_images
 
         # 상세 설명 수집 (renderContent에서 이미지 + 텍스트 추출)
         if content_data:
             render_content = content_data.get('renderContent', '')
             if render_content:
-                # HTML에서 img 태그의 src 추출
-                detail_images = re.findall(r'<img[^>]+src="([^"]+)"', render_content)
-                # data:image 제외, http로 시작하는 URL만 필터링
-                detail_images = [url for url in detail_images if url.startswith('http')]
+                # 우선순위 1: se-image-resource 클래스 이미지 (네이버 스마트 에디터)
+                se_images = re.findall(
+                    r'<img[^>]*class="[^"]*se-image-resource[^"]*"[^>]*src="([^"]+)"',
+                    render_content
+                )
+                # src/class 순서 반대인 경우도 처리
+                se_images += re.findall(
+                    r'<img[^>]*src="([^"]+)"[^>]*class="[^"]*se-image-resource[^"]*"',
+                    render_content
+                )
+                se_images = list(dict.fromkeys(u for u in se_images if u.startswith('http')))
 
-                # 스토어 공통 배너/프로모션 이미지 필터링
+                # 우선순위 2: 외부 CDN 이미지 (Naver CDN 제외)
+                # phinf.pstatic.net (checkout.phinf 포함), shop-phinf.pstatic.net 제외
+                naver_cdn_patterns = ['phinf.pstatic.net', 'ssl.pstatic.net', 'storep-phinf.pstatic.net']
+                all_imgs = re.findall(r'<img[^>]+src="([^"]+)"', render_content)
+                external_imgs = [
+                    url for url in all_imgs
+                    if url.startswith('http') and not any(cdn in url for cdn in naver_cdn_patterns)
+                ]
+                external_imgs = list(dict.fromkeys(external_imgs))
+
+                # 배너 패턴 필터링
                 banner_patterns = [
                     'officialsite', 'top_renewal', 'flavor%20of%20the%20month',
                     'flavor of the month', '/banner/', '/promotion/', '/event/', '/common/'
                 ]
-                def is_product_image(url):
+                def is_not_banner(url):
                     lower_url = url.lower()
-                    # 배너 패턴 제외
-                    if any(pattern in lower_url for pattern in banner_patterns):
-                        return False
-                    # shop-phinf.pstatic.net 도메인은 상품 이미지
-                    if 'shop-phinf.pstatic.net' in lower_url:
-                        return True
-                    # gi.esmplus.com은 상품별 상세 이미지일 수 있음 (fileSize 체크는 API에서 불가)
-                    # 파일명에 상품 관련 키워드가 있으면 포함
-                    return True
+                    return not any(p in lower_url for p in banner_patterns)
 
-                detail_images = [url for url in detail_images if is_product_image(url)]
+                # 최종 상세 이미지: se-image-resource + 외부 CDN
+                detail_images = [u for u in (se_images + external_imgs) if is_not_banner(u)]
+                detail_images = list(dict.fromkeys(detail_images))
+
+                # 폴백: se/외부 이미지가 없으면 shop-phinf 이미지 사용 (단 checkout.phinf 제외)
+                if not detail_images:
+                    all_http = [u for u in all_imgs if u.startswith('http')]
+                    detail_images = [
+                        u for u in all_http
+                        if is_not_banner(u) and 'checkout.phinf' not in u
+                    ]
+                    detail_images = list(dict.fromkeys(detail_images))
 
                 if detail_images:
                     product.extra_info['detail_images'] = detail_images
@@ -1105,7 +1124,61 @@ class NaverSmartStoreCollector(BaseCollector):
                     product.extra_info['description'] = desc_text
                     self.logger.debug(f"상세설명 텍스트 {len(desc_text)}자 수집")
 
-        # 상세 이미지 폴백: content_data가 없으면 DOM에서 추출 시도
+        # 상품 상세 페이지에 있을 때 DOM 직접 수집 (renderContent보다 우선)
+        # page.goto로 상품 페이지 방문 시 실행 (API 전용 수집 시에는 카테고리 페이지이므로 스킵)
+        if self.page and product_id in self.page.url:
+            try:
+                await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)
+
+                dom_product_images = await self.page.evaluate("""
+                    () => {
+                        const images = [];
+                        const seen = new Set();
+
+                        const bannerPatterns = [
+                            'officialsite', 'top_renewal', '/banner/', '/promotion/', '/event/', '/common/'
+                        ];
+                        const isBanner = (src) => bannerPatterns.some(p => src.toLowerCase().includes(p));
+
+                        // 1순위: se-image-resource (네이버 스마트 에디터)
+                        document.querySelectorAll('img.se-image-resource').forEach(img => {
+                            const src = img.dataset.src || img.dataset.lazySrc || img.src || '';
+                            if (src && src.startsWith('http') && !seen.has(src) && !isBanner(src)) {
+                                seen.add(src);
+                                images.push(src);
+                            }
+                        });
+                        if (images.length > 0) return images.slice(0, 50);
+
+                        // 2순위: "상세정보 펼쳐보기" 버튼 이전 div (collapsible 섹션)
+                        const expandBtn = [...document.querySelectorAll('button')].find(
+                            b => b.textContent.trim().includes('상세정보 펼쳐보기')
+                        );
+                        if (expandBtn) {
+                            const prevDiv = expandBtn.previousElementSibling;
+                            if (prevDiv) {
+                                prevDiv.querySelectorAll('img').forEach(img => {
+                                    const src = img.dataset.src || img.src || '';
+                                    if (src && src.startsWith('http') && !src.startsWith('data:') &&
+                                        !seen.has(src) && !isBanner(src)) {
+                                        seen.add(src);
+                                        images.push(src);
+                                    }
+                                });
+                            }
+                        }
+                        return images.slice(0, 50);
+                    }
+                """)
+
+                if dom_product_images:
+                    product.extra_info['detail_images'] = dom_product_images
+                    self.logger.debug(f"상세 이미지 (상품페이지 DOM) {len(dom_product_images)}개 수집")
+            except Exception as e:
+                self.logger.debug(f"상품페이지 DOM 이미지 추출 실패: {e}")
+
+        # 상세 이미지 폴백: renderContent에서 수집 못한 경우 DOM에서 추출
         if not product.extra_info.get('detail_images') and self.page:
             try:
                 # 스크롤하여 lazy-load 트리거
@@ -1117,96 +1190,54 @@ class NaverSmartStoreCollector(BaseCollector):
                     () => {
                         const images = [];
                         const seen = new Set();
+                        const repSrc = (document.querySelector("img[alt='대표이미지']") || {}).src || '';
 
-                        // 스토어 공통 배너/프로모션 이미지 필터링 패턴
+                        // 배너/UI 이미지 제외 패턴
                         const bannerPatterns = [
-                            'officialsite',
-                            'top_renewal',
-                            'Flavor%20of%20the%20Month',
-                            'Flavor of the Month',
-                            '/banner/',
-                            '/promotion/',
-                            '/event/',
-                            '/common/',
+                            'officialsite', 'top_renewal', '/banner/', '/promotion/', '/event/', '/common/'
                         ];
+                        const isBanner = (src) => bannerPatterns.some(p => src.toLowerCase().includes(p));
 
-                        const isBannerImage = (src) => {
-                            const lowerSrc = src.toLowerCase();
-                            return bannerPatterns.some(pattern => lowerSrc.includes(pattern.toLowerCase()));
-                        };
-
-                        // 상세설명 영역 선택자들
-                        const detailSelectors = [
-                            '[class*="se-main-container"]',
-                            '[class*="ProductContent"]',
-                            '[class*="product-content"]',
-                            '[class*="detail-content"]',
-                            '[class*="se_component"]',
-                            'div[id*="detail"]',
-                            'div[id*="content"]',
-                        ];
-
-                        for (const sel of detailSelectors) {
-                            const container = document.querySelector(sel);
-                            if (container) {
-                                // se-module-image-link에서 data-linkdata 확인
-                                const imageLinks = container.querySelectorAll('a.se-module-image-link[data-linkdata]');
-                                for (const link of imageLinks) {
-                                    try {
-                                        const linkData = JSON.parse(link.getAttribute('data-linkdata'));
-                                        const src = linkData.src || '';
-                                        const fileSize = parseInt(linkData.fileSize) || 0;
-                                        const height = parseInt(linkData.originalHeight) || 0;
-
-                                        // 상품 상세 이미지 조건: 파일크기 > 0 또는 높이 > 2000
-                                        if (src && src.startsWith('http') &&
-                                            !seen.has(src) &&
-                                            !isBannerImage(src) &&
-                                            (fileSize > 100000 || height > 2000 || src.includes('shop-phinf.pstatic.net'))) {
-                                            seen.add(src);
-                                            images.push(src);
-                                        }
-                                    } catch (e) {}
-                                }
-
-                                // 일반 img 태그도 확인 (shop-phinf 도메인 우선)
-                                if (images.length === 0) {
-                                    const imgs = container.querySelectorAll('img');
-                                    for (const img of imgs) {
-                                        const src = img.src || img.dataset.src || img.dataset.lazySrc || '';
-                                        if (src && src.startsWith('http') &&
-                                            !src.includes('data:image') &&
-                                            !seen.has(src) &&
-                                            !src.includes('logo') &&
-                                            !src.includes('icon') &&
-                                            !isBannerImage(src) &&
-                                            (src.includes('shop-phinf.pstatic.net') || img.naturalHeight > 2000)) {
-                                            seen.add(src);
-                                            images.push(src);
-                                        }
-                                    }
-                                }
-
-                                if (images.length > 0) break;
+                        // 1순위: se-image-resource (네이버 스마트 에디터)
+                        // data-src 우선 (lazy-load 실제 URL)
+                        document.querySelectorAll('img.se-image-resource').forEach(img => {
+                            const src = img.dataset.src || img.dataset.lazySrc || img.src || '';
+                            if (src && src.startsWith('http') && !seen.has(src) && !isBanner(src)) {
+                                seen.add(src);
+                                images.push(src);
                             }
-                        }
+                        });
 
-                        // 폴백: 전체 페이지에서 shop-phinf 이미지 찾기
-                        if (images.length === 0) {
-                            const allImgs = document.querySelectorAll('img');
-                            for (const img of allImgs) {
-                                const src = img.src || '';
-                                if (src.startsWith('http') &&
-                                    src.includes('shop-phinf.pstatic.net') &&
-                                    !seen.has(src) &&
-                                    !isBannerImage(src)) {
-                                    seen.add(src);
-                                    images.push(src);
+                        if (images.length > 0) return images.slice(0, 50);
+
+                        // 2순위: se-module-image-link의 data-linkdata
+                        document.querySelectorAll('a.se-module-image-link[data-linkdata]').forEach(link => {
+                            try {
+                                const src = JSON.parse(link.getAttribute('data-linkdata')).src || '';
+                                if (src && src.startsWith('http') && !seen.has(src)) {
+                                    seen.add(src); images.push(src);
                                 }
-                            }
-                        }
+                            } catch (e) {}
+                        });
 
-                        return images.slice(0, 50);  // 최대 50개
+                        if (images.length > 0) return images.slice(0, 50);
+
+                        // 3순위: data-src가 http로 시작하는 외부 CDN img 태그
+                        // 대표이미지 제외, 배너 제외, Naver CDN(phinf.pstatic.net) 제외
+                        const naverCdns = ['phinf.pstatic.net', 'ssl.pstatic.net'];
+                        document.querySelectorAll('img[data-src]').forEach(img => {
+                            const src = img.dataset.src || '';
+                            if (src && src.startsWith('http') &&
+                                src !== repSrc &&
+                                !seen.has(src) &&
+                                !isBanner(src) &&
+                                !naverCdns.some(cdn => src.includes(cdn))) {
+                                seen.add(src);
+                                images.push(src);
+                            }
+                        });
+
+                        return images.slice(0, 50);
                     }
                 """)
 
