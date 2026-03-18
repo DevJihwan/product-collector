@@ -209,7 +209,8 @@ class NaverSmartStoreCollector(BaseCollector):
                 match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*({.+?});?\s*</script>', html, re.DOTALL)
                 if match:
                     state_data = json.loads(match.group(1))
-                    category_data = state_data.get('category', {})
+                    # 실제 키는 'categoryProducts' (구버전 'category' 폴백 포함)
+                    category_data = state_data.get('categoryProducts', state_data.get('category', {}))
                     for key in category_data:
                         if isinstance(category_data[key], dict):
                             sub_data = category_data[key]
@@ -236,23 +237,17 @@ class NaverSmartStoreCollector(BaseCollector):
                 state_data = json.loads(match.group(1))
 
                 # 스토어 카테고리 이름 추출
-                category_names = state_data.get('categoryNames', {})
-                if category_names:
-                    a_data = category_names.get('A', {})
-                    if a_data and url_info.get('category_id'):
-                        cat_id = url_info['category_id']
-                        if cat_id in a_data:
-                            self.current_store_category = a_data[cat_id]
-                            self.logger.debug(f"스토어 카테고리: {self.current_store_category}")
+                # 실제 구조: categoryNames = {cat_id: {'name': '카테고리명'}} 또는 {cat_id: '카테고리명'}
+                cat_id = url_info.get('category_id', '')
+                if cat_id:
+                    category_names = state_data.get('categoryNames', {})
+                    if cat_id in category_names:
+                        cat_info = category_names[cat_id]
+                        if isinstance(cat_info, dict):
+                            self.current_store_category = cat_info.get('name', '')
                         else:
-                            store_cat = state_data.get('storeCategory', {})
-                            a_store = store_cat.get('A', {})
-                            first_cats = a_store.get('firstCategories', [])
-                            for cat in first_cats:
-                                if cat.get('id') == cat_id or cat.get('categoryId') == cat_id:
-                                    self.current_store_category = cat.get('name', '')
-                                    self.logger.debug(f"스토어 카테고리 (firstCategories): {self.current_store_category}")
-                                    break
+                            self.current_store_category = str(cat_info)
+                        self.logger.debug(f"스토어 카테고리: {self.current_store_category}")
 
                 # channel_id 추출
                 if not self.channel_id:
@@ -397,7 +392,8 @@ class NaverSmartStoreCollector(BaseCollector):
                 return []
 
             state_data = json.loads(match.group(1))
-            category_data = state_data.get('category', {})
+            # 실제 키는 'categoryProducts' (구버전 'category' 폴백 포함)
+            category_data = state_data.get('categoryProducts', state_data.get('category', {}))
 
             items = []
             for key in category_data:
@@ -818,8 +814,8 @@ class NaverSmartStoreCollector(BaseCollector):
             finally:
                 self.page.remove_listener('response', capture_product_response)
 
-        # 카테고리 정보 수집 - 페이지 방문 후 __PRELOADED_STATE__에서 추출
-        if self.page and not product.extra_info.get('category'):
+        # 카테고리 정보 수집 - page.goto로 상품 페이지를 실제 방문한 경우에만 PRELOADED_STATE 추출
+        if self.page and product_id in self.page.url and not product.extra_info.get('category'):
             try:
                 # __PRELOADED_STATE__에서 categoryNavigations 추출
                 html = await self.page.content()
@@ -841,6 +837,22 @@ class NaverSmartStoreCollector(BaseCollector):
                 self.logger.debug(f"PRELOADED_STATE 카테고리 추출 실패: {e}")
 
         if product_data:
+            # 카테고리 추출 - fetch API 응답에서 직접 추출 (page.goto 없이 API만 호출한 경우 커버)
+            if not product.extra_info.get('category'):
+                cat_nav = product_data.get('categoryNavigations', [])
+                if cat_nav:
+                    category = '>'.join([c.get('categoryName', '') for c in cat_nav if c.get('categoryName')])
+                    if category:
+                        product.extra_info['category'] = category
+                        self.logger.debug(f"카테고리 (product_data.categoryNavigations): {category}")
+                if not product.extra_info.get('category'):
+                    cat_info = product_data.get('category', {})
+                    if cat_info:
+                        whole_cat = cat_info.get('wholeCategoryName', '')
+                        if whole_cat:
+                            product.extra_info['category'] = whole_cat
+                            self.logger.debug(f"카테고리 (product_data.category): {whole_cat}")
+
             # 가격 정보 수정: 배송비와 판매가 분리
             # - Price (정가) 란에 → 배송비 (화면에 표시된 값 기준)
             # - Sale_Price (판매가) → 실제 판매가
