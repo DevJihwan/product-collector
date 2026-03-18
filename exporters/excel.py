@@ -234,6 +234,9 @@ class JoomExcelExporter:
         # 추가 이미지 (콤마로 구분)
         extra_images = extra_info.get('extra_images', [])
         extra_images_str = ', '.join(extra_images) if extra_images else ''
+        # 썸네일이 1장인 경우 Image_URL과 Extra_Images가 동일하면 Extra_Images 비우기
+        if extra_images_str == image_url:
+            extra_images_str = ''
 
         # 상세 설명 이미지 (콤마로 구분)
         detail_images = extra_info.get('detail_images', [])
@@ -320,7 +323,10 @@ class JoomExcelExporter:
             else:
                 option_extra_images = option.get('extra_images', [])
             if option_extra_images:
-                data['Extra_Images'] = ', '.join(option_extra_images)
+                option_extra_images_str = ', '.join(option_extra_images)
+                # 썸네일이 1장인 경우 Image_URL과 Extra_Images가 동일하면 Extra_Images 비우기
+                if option_extra_images_str != data.get('Image_URL', ''):
+                    data['Extra_Images'] = option_extra_images_str
 
             # 옵션별 상세 이미지
             option_detail_images = []
