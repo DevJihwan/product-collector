@@ -312,14 +312,21 @@ class DaisoCollector(BaseCollector):
 
                     // 3. 썸네일 이미지
                     const seenUrls = new Set();
-                    const thumbBtnImgs = document.querySelectorAll('.el-button img');
-                    thumbBtnImgs.forEach(img => {
-                        let src = img.src || img.getAttribute('data-src') || '';
+                    // /file/resize/PD/thumb/300/ 또는 /file/resize/PD/thumb/850/ → /file/PD/ 원본 URL 변환
+                    function normalizeImgUrl(src) {
                         if (src.includes('/dims/')) {
                             src = src.split('/dims/')[0];
                         } else if (src.includes('?')) {
                             src = src.split('?')[0];
                         }
+                        if (src.includes('/file/resize/PD/')) {
+                            src = src.replace('/file/resize/PD/', '/file/PD/').replace(/\\/thumb\\/\\d+\\//, '/');
+                        }
+                        return src;
+                    }
+                    const thumbBtnImgs = document.querySelectorAll('.el-button img');
+                    thumbBtnImgs.forEach(img => {
+                        let src = normalizeImgUrl(img.src || img.getAttribute('data-src') || '');
                         if (src && src.includes('cdn.daisomall') && src.includes('/file/PD/') && !seenUrls.has(src)) {
                             seenUrls.add(src);
                             result.thumbnail_images.push(src);
@@ -329,12 +336,7 @@ class DaisoCollector(BaseCollector):
                     if (result.thumbnail_images.length === 0) {
                         const goodsSwiperImgs = document.querySelectorAll('.goods-swiper-wrap .swiper-slide:not(.swiper-slide-duplicate) img');
                         goodsSwiperImgs.forEach(img => {
-                            let src = img.src || img.getAttribute('data-src') || '';
-                            if (src.includes('/dims/')) {
-                                src = src.split('/dims/')[0];
-                            } else if (src.includes('?')) {
-                                src = src.split('?')[0];
-                            }
+                            let src = normalizeImgUrl(img.src || img.getAttribute('data-src') || '');
                             if (src && src.includes('cdn.daisomall') && src.includes('/file/PD/') && !seenUrls.has(src)) {
                                 seenUrls.add(src);
                                 result.thumbnail_images.push(src);
