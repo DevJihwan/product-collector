@@ -5,7 +5,7 @@ Build command: python -m PyInstaller --clean collector.spec
 """
 
 import sys
-import importlib.util
+import re
 from pathlib import Path
 
 block_cipher = None
@@ -13,11 +13,9 @@ block_cipher = None
 # Project root
 PROJECT_ROOT = Path(SPECPATH)
 
-# 버전 정보 읽기 (config.py에서 APP_VERSION 로드)
-_spec = importlib.util.spec_from_file_location("config", PROJECT_ROOT / "config.py")
-_config = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_config)
-APP_VERSION = _config.APP_VERSION
+# 버전 정보 읽기 (정규식으로 텍스트 파싱 → 부작용 없음)
+_config_text = (PROJECT_ROOT / "config.py").read_text(encoding="utf-8")
+APP_VERSION = re.search(r'^APP_VERSION\s*=\s*["\'](.+?)["\']', _config_text, re.MULTILINE).group(1)
 
 a = Analysis(
     ['app.py'],
