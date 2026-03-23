@@ -1,42 +1,21 @@
-# Python
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
+*.pyo
+.DS_Store
+logs/
+output/
 dist/
 build/
-*.egg
-
-# Virtual environment
+*.spec.bak
+납품파일/
+*.zip
+*.xlsx
+*.json
+*.html
+*.png
+*.log
+*.pdf
 venv/
 .venv/
 env/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs & Output
-logs/
-output/
-
-# PyInstaller
-*.spec.bak
-
-# Playwright browsers
-ms-playwright/
-
-# Temp / test output
-test_*.xlsx
-*.zip
-
-# 납품파일
-납품파일/
-납품파일.zip
+.env

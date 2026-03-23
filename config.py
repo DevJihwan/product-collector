@@ -5,6 +5,12 @@ import os
 import sys
 from pathlib import Path
 
+# ────────────────────────────────────────────────
+# 앱 버전 (여기만 수정하면 전체 반영됨)
+APP_VERSION = "1.1"
+APP_NAME = f"상품 데이터 수집 프로그램 v{APP_VERSION}"
+# ────────────────────────────────────────────────
+
 # PyInstaller exe 실행 시 Playwright가 시스템에 설치된 브라우저를 사용하도록 설정
 # '0'은 Playwright의 기본 전역 설치 경로를 사용하라는 의미
 if getattr(sys, 'frozen', False):
@@ -19,9 +25,9 @@ else:
     # 일반 Python 스크립트 실행 중
     BASE_DIR = Path(__file__).parent
 
-# 출력 디렉토리
-OUTPUT_DIR = BASE_DIR / "output"
-LOGS_DIR = BASE_DIR / "logs"
+# 출력 디렉토리 (버전별 독립 폴더 → 여러 버전 동시 실행 시 충돌 방지)
+OUTPUT_DIR = BASE_DIR / f"output_v{APP_VERSION}"
+LOGS_DIR = BASE_DIR / f"logs_v{APP_VERSION}"
 DATA_DIR = BASE_DIR / "data"
 
 # 디렉토리 생성

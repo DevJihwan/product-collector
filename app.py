@@ -34,7 +34,7 @@ import customtkinter as ctk
 # 모듈 경로 추가
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import OUTPUT_DIR, LOGS_DIR
+from config import OUTPUT_DIR, LOGS_DIR, APP_NAME
 from collectors.musinsa import MusinsaCollector, is_musinsa_url
 from collectors.naver import NaverSmartStoreCollector, is_naver_store_url
 from collectors.daiso import DaisoCollector, is_daiso_url
@@ -65,7 +65,7 @@ class CollectorApp(ctk.CTk):
         super().__init__()
 
         # 윈도우 설정
-        self.title("상품 데이터 수집 프로그램 v1.1")
+        self.title(APP_NAME)
         self.geometry("900x700")
         self.minsize(800, 600)
 

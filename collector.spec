@@ -5,12 +5,19 @@ Build command: python -m PyInstaller --clean collector.spec
 """
 
 import sys
+import importlib.util
 from pathlib import Path
 
 block_cipher = None
 
 # Project root
 PROJECT_ROOT = Path(SPECPATH)
+
+# 버전 정보 읽기 (config.py에서 APP_VERSION 로드)
+_spec = importlib.util.spec_from_file_location("config", PROJECT_ROOT / "config.py")
+_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_config)
+APP_VERSION = _config.APP_VERSION
 
 a = Analysis(
     ['app.py'],
@@ -75,7 +82,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='ProductCollector',
+    name=f'ProductCollector_v{APP_VERSION}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
