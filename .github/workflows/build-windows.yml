@@ -37,13 +37,18 @@ jobs:
           }
           exit 0
 
-      - name: Get build date
+      - name: Get build date and version
         id: date
         run: |
           $date = Get-Date -Format "yyyyMMdd"
           $datetime = Get-Date -Format "yyyyMMdd_HHmmss"
           echo "date=$date" >> $env:GITHUB_OUTPUT
           echo "datetime=$datetime" >> $env:GITHUB_OUTPUT
+          # config.py 에서 APP_VERSION 추출
+          $configContent = Get-Content "config.py" -Raw
+          $version = [regex]::Match($configContent, 'APP_VERSION\s*=\s*["\x27](.+?)["\x27]').Groups[1].Value
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "APP_VERSION detected: $version"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -65,24 +70,29 @@ jobs:
 
       - name: Verify build output
         run: |
+          $version = "${{ steps.date.outputs.version }}"
+          $exeName = "ProductCollector_v${version}.exe"
           dir dist
-          if (Test-Path "dist\ProductCollector.exe") {
-            $size = (Get-Item "dist\ProductCollector.exe").Length / 1MB
-            Write-Host "Build successful! Size: $([math]::Round($size, 2)) MB"
+          if (Test-Path "dist\$exeName") {
+            $size = (Get-Item "dist\$exeName").Length / 1MB
+            Write-Host "Build successful! $exeName  Size: $([math]::Round($size, 2)) MB"
           } else {
-            Write-Host "ERROR: ProductCollector.exe not found"
+            Write-Host "ERROR: $exeName not found in dist/"
             exit 1
           }
 
       - name: Prepare release package
         run: |
+          $version = "${{ steps.date.outputs.version }}"
+          $exeName = "ProductCollector_v${version}.exe"
           # install_browser.bat 복사
           Copy-Item "install_browser.bat" "dist\install_browser.bat"
-          # README 생성 (빌드 날짜 포함)
+          # README 생성 (버전 및 빌드 날짜 포함)
           @"
           ==========================================
-            ProductCollector 설치 안내
+            ProductCollector v${version} 설치 안내
           ==========================================
+          버전: v${version}
           빌드 날짜: ${{ steps.date.outputs.datetime }}
 
           1. Python 3.11 설치 (https://www.python.org/downloads/)
@@ -91,7 +101,7 @@ jobs:
           2. install_browser.bat 실행
              - Playwright 브라우저를 설치합니다
 
-          3. ProductCollector.exe 실행
+          3. ${exeName} 실행
              - 프로그램이 시작됩니다
 
           ※ install_browser.bat 은 최초 1회만 실행하면 됩니다.
@@ -100,9 +110,9 @@ jobs:
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: ProductCollector-Windows-${{ steps.date.outputs.date }}
+          name: ProductCollector-v${{ steps.date.outputs.version }}-Windows-${{ steps.date.outputs.date }}
           path: |
-            dist/ProductCollector.exe
+            dist/ProductCollector_v${{ steps.date.outputs.version }}.exe
             dist/install_browser.bat
             dist/README.txt
           retention-days: 7
